@@ -17,6 +17,10 @@ raw_json/
 *.jsonl
 *.sqlite
 *.db
+db/*.sqlite
+db/*.sqlite3
+db/*.db
+db/*.db-*
 .local/
 notes/finance/
 

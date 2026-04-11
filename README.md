@@ -32,6 +32,33 @@ For auto-restart during development:
 just watch
 ```
 
+## Bot Architecture
+
+The chatbot now follows a 2-pass skill pipeline:
+
+1. Pass 1: when the owner tags the bot, the bot loads available skills from `skills/*/SKILL.md` and asks an LLM router to choose the best action.
+2. Action step: the selected skill executes a local tool, typically `skills/<skill-name>/run.py`, and that tool writes structured or plain-text results to `stdout`.
+3. Pass 2: the bot sends the tool output, together with the user request and recent context, to `codex exec` so the final reply is synthesized by an LLM before being returned to Discord.
+
+This split keeps routing cheap, allows deterministic local tool execution, and makes final user-facing responses consistent even when tool outputs are noisy or verbose.
+
+Recommended skill contract:
+
+- `skills/<skill-name>/SKILL.md`: routing metadata, trigger examples, arguments, and execution notes
+- `skills/<skill-name>/run.py`: side-effecting or data-fetching command entrypoint
+- `stdout`: the canonical output boundary between the tool run and Pass 2 summarization
+- `pass2_mode` in `SKILL.md` frontmatter controls whether the bot should always summarize with `codex exec`, never summarize, or decide case by case
+
+Supported `pass2_mode` values:
+
+- `always`: always run Pass 2
+- `never`: return `run.py` output directly
+- `optional`: bot decides based on the skill and action result
+
+In this model, Discord commands only bypass Pass 2 when the skill output is already user-ready or explicitly diagnostic. The normal path remains `route -> run.py -> codex exec -> reply`.
+
+Bot prompts are stored under `src/bot/prompt/` and loaded from disk on demand for each routing or Pass 2 execution. The bot does not keep compiled prompt text hardcoded in Python or cached across process restarts.
+
 When mentioned in Discord, the bot can also trigger the finance report workflow. Example messages:
 
 ```text

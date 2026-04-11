@@ -14,7 +14,13 @@ load_dotenv()
 from .config import ALLOWED_USER_ID, SCHEDULE_DB_PATH
 from .schedule_db import ensure_db
 from .scheduler import FinanceScheduler
-from .skills import execute_skill, route_tool_cli
+from .skills import (
+    execute_skill_action,
+    format_direct_skill_reply,
+    render_skill_reply_pass2,
+    route_tool_cli,
+    should_use_pass2,
+)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -52,12 +58,21 @@ async def on_message(message: discord.Message) -> None:
     routed = await to_thread(route_tool_cli, content, "")
     if routed and routed.get("tool"):
         try:
-            response = await to_thread(
-                execute_skill,
+            action_result = await to_thread(
+                execute_skill_action,
                 routed["tool"],
                 routed.get("args", {}),
                 channel_id=str(message.channel.id),
             )
+            if await to_thread(should_use_pass2, routed["tool"], routed.get("args", {}), action_result):
+                response = await to_thread(
+                    render_skill_reply_pass2,
+                    content,
+                    action_result,
+                    recent_context="",
+                )
+            else:
+                response = await to_thread(format_direct_skill_reply, action_result)
         except Exception as exc:
             response = f"技能執行失敗：{type(exc).__name__}: {exc}"
         await message.channel.send(response)

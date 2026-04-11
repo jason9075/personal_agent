@@ -2,6 +2,7 @@
 name: finance-schedule
 description: Manage the bot's SQLite-backed finance report schedules from Discord. Supports list, add, update, delete, enable, and disable.
 bypasses_llm: true
+pass2_mode: never
 ---
 
 Use this skill when the user wants to manage recurring finance report jobs from Discord.

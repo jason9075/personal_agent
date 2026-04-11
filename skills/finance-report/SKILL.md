@@ -2,6 +2,7 @@
 name: finance-report
 description: Run or inspect the RSS-based finance report pipeline from Discord. Supports listing sources, processing all sources, selecting one source, optional target date, and optional workers.
 bypasses_llm: true
+pass2_mode: optional
 ---
 
 Use this skill when the user wants to trigger the finance report pipeline from Discord.
