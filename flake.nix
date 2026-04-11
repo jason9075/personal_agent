@@ -47,6 +47,7 @@
             pkgs.ffmpeg
             pkgs.plantuml
             pkgs.visidata
+            pkgs.tmux
           ];
 
           shellHook = ''
