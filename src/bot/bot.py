@@ -4,22 +4,29 @@ from __future__ import annotations
 import os
 import sys
 from asyncio import to_thread
+from pathlib import Path
 
 import discord
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from .config import ALLOWED_USER_ID
+from .config import ALLOWED_USER_ID, SCHEDULE_DB_PATH
+from .schedule_db import ensure_db
+from .scheduler import FinanceScheduler
 from .skills import execute_skill, route_tool_cli
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+repo_root = Path(__file__).resolve().parents[2]
+scheduler = FinanceScheduler(SCHEDULE_DB_PATH, repo_root, client)
 
 
 @client.event
 async def on_ready() -> None:
+    ensure_db(SCHEDULE_DB_PATH)
+    scheduler.start()
     print(f"[bot] logged in as {client.user}", flush=True)
 
 
@@ -45,7 +52,12 @@ async def on_message(message: discord.Message) -> None:
     routed = await to_thread(route_tool_cli, content, "")
     if routed and routed.get("tool"):
         try:
-            response = await to_thread(execute_skill, routed["tool"], routed.get("args", {}))
+            response = await to_thread(
+                execute_skill,
+                routed["tool"],
+                routed.get("args", {}),
+                channel_id=str(message.channel.id),
+            )
         except Exception as exc:
             response = f"技能執行失敗：{type(exc).__name__}: {exc}"
         await message.channel.send(response)

@@ -6,7 +6,9 @@ import re
 import subprocess
 from pathlib import Path
 
-from .config import GEMINI_TOOL_MODEL, PROMPT_DIR, SKILLS_DIR
+from .config import GEMINI_TOOL_MODEL, PROMPT_DIR, SCHEDULE_DB_PATH, SKILLS_DIR
+from .schedule_db import create_job, delete_job, ensure_db, list_jobs, update_job
+from .scheduler import parse_cron
 
 
 def load_skill_descriptors(skills_dir: Path) -> list[dict[str, str]]:
@@ -56,10 +58,11 @@ def load_skill_section(skill_name: str, skills_dir: Path, section: str) -> str:
 
 def route_tool_cli(user_msg: str, recent_context: str = "") -> dict | None:
     """Call GEMINI_TOOL_MODEL to decide which skill to invoke."""
-    direct = _route_finance_report_direct(user_msg)
-    if direct:
-        print(f"[bot] direct_tool → {direct['tool']}", flush=True)
-        return direct
+    for router in (_route_finance_schedule_direct, _route_finance_report_direct):
+        direct = router(user_msg)
+        if direct:
+            print(f"[bot] direct_tool → {direct['tool']}", flush=True)
+            return direct
 
     if not GEMINI_TOOL_MODEL:
         return None
@@ -105,11 +108,13 @@ def route_tool_cli(user_msg: str, recent_context: str = "") -> dict | None:
     return {"tool": tool_name, "args": parsed.get("args", {})}
 
 
-def execute_skill(tool_name: str, args: dict | None = None) -> str:
+def execute_skill(tool_name: str, args: dict | None = None, *, channel_id: str = "") -> str:
     """Execute a routed skill and return a user-facing response string."""
     args = args or {}
     if tool_name == "finance-report":
         return _run_finance_report(args)
+    if tool_name == "finance-schedule":
+        return _run_finance_schedule(args, channel_id=channel_id)
     raise RuntimeError(f"unknown skill: {tool_name}")
 
 
@@ -136,7 +141,69 @@ def _route_finance_report_direct(user_msg: str) -> dict | None:
     if date_match:
         args["target_date"] = date_match.group(1)
 
-    return {"tool": "finance-report", "args": args}
+    if any(keyword in lowered for keyword in ("finance report", "財經報告", "finance", "report", "財經")):
+        return {"tool": "finance-report", "args": args}
+    return None
+
+
+def _route_finance_schedule_direct(user_msg: str) -> dict | None:
+    text = user_msg.strip()
+    lowered = text.lower()
+    if not any(keyword in lowered for keyword in ("schedule", "cron", "排程")):
+        return None
+    if not any(keyword in lowered for keyword in ("finance", "財經", "report")):
+        return None
+
+    args: dict[str, object] = {}
+    action_match = re.search(r"\b(list|add|update|delete|enable|disable)\b", lowered)
+    if action_match:
+        args["action"] = action_match.group(1)
+    elif "列表" in text:
+        args["action"] = "list"
+    elif "新增" in text:
+        args["action"] = "add"
+    elif "修改" in text:
+        args["action"] = "update"
+    elif "刪除" in text:
+        args["action"] = "delete"
+    elif "停用" in text:
+        args["action"] = "disable"
+    elif "啟用" in text:
+        args["action"] = "enable"
+    else:
+        args["action"] = "list"
+
+    id_match = re.search(r"\b(?:id|job)\s*[:=]?\s*(\d+)\b", lowered)
+    if not id_match:
+        leading_id = re.search(r"\b(?:update|delete|enable|disable)\s+(\d+)\b", lowered)
+        if leading_id:
+            id_match = leading_id
+    if id_match:
+        args["id"] = int(id_match.group(1))
+
+    name_match = re.search(r"\bname\s*[:=]\s*([a-zA-Z0-9_-]+)", text)
+    if name_match:
+        args["name"] = name_match.group(1)
+
+    cron_match = re.search(r'\bcron\s*[:=]\s*"([^"]+)"', text)
+    if not cron_match:
+        cron_match = re.search(r"\bcron\s*[:=]\s*([^\s]+(?:\s+[^\s]+){4})", text)
+    if cron_match:
+        args["cron"] = cron_match.group(1).strip()
+
+    source_match = re.search(r"(?:\bsource\b|來源)\s*[:=]?\s*([a-zA-Z0-9_-]+)", text, re.IGNORECASE)
+    if source_match:
+        args["source"] = source_match.group(1)
+
+    workers_match = re.search(r"(?:workers?)\s*[:=]?\s*(\d+)", text, re.IGNORECASE)
+    if workers_match:
+        args["workers"] = int(workers_match.group(1))
+
+    channel_match = re.search(r"(?:channel)\s*[:=]?\s*(\d+)", text, re.IGNORECASE)
+    if channel_match:
+        args["channel"] = channel_match.group(1)
+
+    return {"tool": "finance-schedule", "args": args}
 
 
 def _run_finance_report(args: dict) -> str:
@@ -167,3 +234,77 @@ def _run_finance_report(args: dict) -> str:
     if result.returncode != 0:
         return f"財經報告執行失敗：\n```text\n{output[:3500]}\n```"
     return f"財經報告執行完成：\n```text\n{output[:3500]}\n```"
+
+
+def _run_finance_schedule(args: dict, *, channel_id: str = "") -> str:
+    ensure_db(SCHEDULE_DB_PATH)
+    action = str(args.get("action", "list")).strip().lower()
+    if action == "list":
+        jobs = list_jobs(SCHEDULE_DB_PATH)
+        if not jobs:
+            return "目前沒有排程。"
+        lines = ["目前排程："]
+        for job in jobs:
+            source_label = job.source_id or "(all)"
+            enabled = "enabled" if job.enabled else "disabled"
+            last = f" | last={job.last_run_at} {job.last_status}".rstrip() if job.last_run_at or job.last_status else ""
+            lines.append(
+                f"- #{job.id} {job.name} | cron={job.cron_expr} | source={source_label} | workers={job.workers} | {enabled}{last}"
+            )
+        return "\n".join(lines)
+
+    if action == "add":
+        name = str(args.get("name", "")).strip()
+        cron_expr = str(args.get("cron", "")).strip()
+        source_id = str(args.get("source", "")).strip()
+        workers = int(args.get("workers", 4))
+        target_channel = str(args.get("channel", "")).strip() or channel_id
+        if not name or not cron_expr:
+            raise RuntimeError("add requires name=<job_name> and cron=\"m h dom mon dow\"")
+        parse_cron(cron_expr)
+        job = create_job(
+            SCHEDULE_DB_PATH,
+            name=name,
+            cron_expr=cron_expr,
+            source_id=source_id,
+            workers=workers,
+            channel_id=target_channel,
+        )
+        return f"已新增排程 #{job.id} `{job.name}`：cron=`{job.cron_expr}` source=`{job.source_id or '(all)'}` workers={job.workers}"
+
+    if action in {"update", "enable", "disable", "delete"}:
+        job_id = int(args.get("id", 0))
+        if job_id <= 0:
+            raise RuntimeError(f"{action} requires id=<job_id>")
+
+        if action == "delete":
+            delete_job(SCHEDULE_DB_PATH, job_id)
+            return f"已刪除排程 #{job_id}"
+
+        if action == "enable":
+            job = update_job(SCHEDULE_DB_PATH, job_id, enabled=True)
+            return f"已啟用排程 #{job.id} `{job.name}`"
+
+        if action == "disable":
+            job = update_job(SCHEDULE_DB_PATH, job_id, enabled=False)
+            return f"已停用排程 #{job.id} `{job.name}`"
+
+        name = str(args.get("name", "")).strip() or None
+        cron_expr = str(args.get("cron", "")).strip() or None
+        source_id = str(args.get("source", "")).strip() or None
+        workers = int(args["workers"]) if "workers" in args else None
+        target_channel = str(args.get("channel", "")).strip() or None
+        if cron_expr:
+            parse_cron(cron_expr)
+        job = update_job(
+            SCHEDULE_DB_PATH,
+            job_id,
+            name=name,
+            cron_expr=cron_expr,
+            source_id=source_id,
+            workers=workers,
+            channel_id=target_channel,
+        )
+        return f"已更新排程 #{job.id} `{job.name}`：cron=`{job.cron_expr}` source=`{job.source_id or '(all)'}` workers={job.workers}"
+
+    raise RuntimeError(f"unsupported schedule action: {action}")

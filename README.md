@@ -41,6 +41,17 @@ When mentioned in Discord, the bot can also trigger the finance report workflow.
 @bot finance sources
 ```
 
+The bot also has its own SQLite-backed scheduler at `db/bot_scheduler.sqlite3`. It behaves like an app-managed crontab rather than the system crontab. Example schedule commands:
+
+```text
+@bot finance schedule list
+@bot finance schedule add name=morning cron="0 8 * * 1-5" source=youtinghao workers=1
+@bot finance schedule update 3 cron="30 8 * * 1-5"
+@bot finance schedule disable 3
+@bot finance schedule enable 3
+@bot finance schedule delete 3
+```
+
 ## Finance Report Pipeline
 
 The repository also includes an RSS-backed finance report pipeline for private use. Manage feeds in `config/finance_sources.toml`, then run:
