@@ -17,6 +17,8 @@ raw_json/
 *.jsonl
 *.sqlite
 *.db
+.local/
+notes/finance/
 
 # Nix
 .direnv/
@@ -27,6 +29,7 @@ result-*
 .env
 .env.*
 *.credentials.json
+config/finance_sources.toml
 
 # Editor
 .vim/
