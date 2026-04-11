@@ -32,6 +32,15 @@ For auto-restart during development:
 just watch
 ```
 
+When mentioned in Discord, the bot can also trigger the finance report workflow. Example messages:
+
+```text
+@bot finance report
+@bot finance report source=youtinghao
+@bot finance report source=youtinghao 20260410
+@bot finance sources
+```
+
 ## Finance Report Pipeline
 
 The repository also includes an RSS-backed finance report pipeline for private use. Manage feeds in `config/finance_sources.toml`, then run:

@@ -1,5 +1,8 @@
-"""Runtime configuration for the minimal private Discord bot."""
+"""Runtime configuration for the private Discord bot."""
+from __future__ import annotations
+
 import os
+from pathlib import Path
 
 
 def _require_env(name: str) -> str:
@@ -9,4 +12,11 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _optional_env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
 ALLOWED_USER_ID = _require_env("ALLOWED_USER_ID")
+GEMINI_TOOL_MODEL = _optional_env("GEMINI_TOOL_MODEL")
+PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
+SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"

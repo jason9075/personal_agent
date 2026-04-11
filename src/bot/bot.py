@@ -1,6 +1,9 @@
-"""Minimal Discord bot: reply only when tagged by the allowed user and echo the content."""
+"""Private Discord bot with skill-based command execution."""
+from __future__ import annotations
+
 import os
 import sys
+from asyncio import to_thread
 
 import discord
 from dotenv import load_dotenv
@@ -8,6 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .config import ALLOWED_USER_ID
+from .skills import execute_skill, route_tool_cli
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -36,6 +40,15 @@ async def on_message(message: discord.Message) -> None:
     content = content.strip()
 
     if not content:
+        return
+
+    routed = await to_thread(route_tool_cli, content, "")
+    if routed and routed.get("tool"):
+        try:
+            response = await to_thread(execute_skill, routed["tool"], routed.get("args", {}))
+        except Exception as exc:
+            response = f"技能執行失敗：{type(exc).__name__}: {exc}"
+        await message.channel.send(response)
         return
 
     await message.channel.send(content)
