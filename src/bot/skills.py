@@ -226,6 +226,35 @@ def render_skill_reply_pass2(
     return result.stdout.strip() or "技能已執行完成。"
 
 
+def render_general_reply(user_msg: str, *, recent_context: str = "") -> str:
+    """Generate a normal Discord reply when no skill is selected."""
+    prompt_template = load_prompt("general_reply.md")
+    prompt = prompt_template.format(
+        user_msg=user_msg,
+        recent_context=recent_context.strip() or "(none)",
+    )
+    cmd = [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "workspace-write",
+        "-C",
+        str(SKILLS_DIR.parents[0]),
+    ]
+    result = subprocess.run(
+        cmd,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        cwd=SKILLS_DIR.parents[0],
+        check=False,
+    )
+    if result.returncode != 0:
+        return "目前無法完成一般回覆，請稍後再試。"
+    return result.stdout.strip() or "目前沒有可回覆的內容。"
+
+
 def should_use_pass2(tool_name: str, args: dict | None, action_result: SkillActionResult) -> bool:
     """Decide whether a skill result still needs pass-2 synthesis."""
     args = args or {}

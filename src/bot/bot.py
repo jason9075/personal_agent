@@ -17,6 +17,7 @@ from .scheduler import FinanceScheduler
 from .skills import (
     execute_skill_action,
     format_direct_skill_reply,
+    render_general_reply,
     render_skill_reply_pass2,
     route_tool_cli,
     should_use_pass2,
@@ -78,7 +79,12 @@ async def on_message(message: discord.Message) -> None:
         await message.channel.send(response)
         return
 
-    await message.channel.send(content)
+    response = await to_thread(
+        render_general_reply,
+        content,
+        recent_context="",
+    )
+    await message.channel.send(response)
 
 
 def main() -> None:
