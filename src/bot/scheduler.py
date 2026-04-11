@@ -9,6 +9,7 @@ from pathlib import Path
 
 import discord
 
+from .logging_utils import get_logger
 from .schedule_db import ScheduledJob, list_jobs, set_job_run_result
 
 
@@ -37,11 +38,12 @@ class FinanceScheduler:
             self._task = asyncio.create_task(self._run_loop(), name="finance-scheduler")
 
     async def _run_loop(self) -> None:
+        logger = get_logger()
         while True:
             try:
                 await self._tick()
             except Exception as exc:
-                print(f"[bot] scheduler tick failed: {type(exc).__name__}: {exc}", flush=True)
+                logger.exception("Scheduler tick failed: %s", type(exc).__name__)
             await asyncio.sleep(SCHEDULER_POLL_SECONDS)
 
     async def _tick(self) -> None:
@@ -59,7 +61,8 @@ class FinanceScheduler:
             await self._run_job(job, now)
 
     async def _run_job(self, job: ScheduledJob, now: datetime) -> None:
-        print(f"[bot] scheduler running job={job.id} name={job.name}", flush=True)
+        logger = get_logger()
+        logger.info("Scheduler running job_id=%s name=%s", job.id, job.name)
         cmd = ["python", "-m", "src.finance_report.runner", "--workers", str(job.workers)]
         if job.source_id:
             cmd.extend(["--source", job.source_id])
@@ -74,6 +77,13 @@ class FinanceScheduler:
         )
         output = (completed.stdout.strip() or completed.stderr.strip() or "(no output)")[:1800]
         status = "ok" if completed.returncode == 0 else "error"
+        logger.info(
+            "Scheduler job completed job_id=%s status=%s returncode=%s output_len=%s",
+            job.id,
+            status,
+            completed.returncode,
+            len(output),
+        )
         set_job_run_result(
             self.db_path,
             job.id,

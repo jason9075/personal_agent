@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import GEMINI_TOOL_MODEL, SCHEDULE_DB_PATH, SKILLS_DIR
+from .logging_utils import get_logger
 from .prompts import load_prompt
 from .schedule_db import create_job, delete_job, ensure_db, list_jobs, update_job
 from .scheduler import parse_cron
@@ -81,13 +82,15 @@ def load_skill_body(skill_name: str, skills_dir: Path) -> str:
 
 def route_tool_cli(user_msg: str, recent_context: str = "") -> dict | None:
     """Call GEMINI_TOOL_MODEL to decide which skill to invoke."""
+    logger = get_logger()
     for router in (_route_finance_schedule_direct, _route_finance_report_direct):
         direct = router(user_msg)
         if direct:
-            print(f"[bot] direct_tool -> {direct['tool']}", flush=True)
+            logger.info("Direct route selected tool=%s args=%s", direct["tool"], direct.get("args", {}))
             return direct
 
     if not GEMINI_TOOL_MODEL:
+        logger.info("No GEMINI_TOOL_MODEL configured; skill router fallback disabled")
         return None
 
     descriptors = load_skill_descriptors(SKILLS_DIR)
@@ -112,7 +115,7 @@ def route_tool_cli(user_msg: str, recent_context: str = "") -> dict | None:
     cmd = ["gemini", "--model", GEMINI_TOOL_MODEL, "-p", prompt]
     result = subprocess.run(cmd, capture_output=True, text=True, cwd="/tmp", check=False)
     if result.returncode != 0:
-        print(f"[bot] route_tool error: {result.stderr.strip()[:200]}", flush=True)
+        logger.warning("route_tool error: %s", result.stderr.strip()[:200])
         return None
 
     raw = result.stdout.strip()
@@ -120,19 +123,20 @@ def route_tool_cli(user_msg: str, recent_context: str = "") -> dict | None:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        print(f"[bot] route_tool parse failure: {raw[:120]}", flush=True)
+        logger.warning("route_tool parse failure: %s", raw[:120])
         return None
 
     tool_name = parsed.get("tool")
     if tool_name not in names:
         return None
 
-    print(f"[bot] route_tool -> {tool_name}", flush=True)
+    logger.info("LLM route selected tool=%s args=%s", tool_name, parsed.get("args", {}))
     return {"tool": tool_name, "args": parsed.get("args", {})}
 
 
 def execute_skill_action(tool_name: str, args: dict | None = None, *, channel_id: str = "") -> SkillActionResult:
     """Execute a skill action via skills/<name>/run.py and return raw process output."""
+    logger = get_logger()
     args = args or {}
     skill_dir = SKILLS_DIR / tool_name
     run_py = skill_dir / "run.py"
@@ -175,6 +179,12 @@ def execute_skill_action(tool_name: str, args: dict | None = None, *, channel_id
         cwd=SKILLS_DIR.parents[0],
         check=False,
     )
+    logger.info(
+        "Executed skill action tool=%s returncode=%s cmd=%s",
+        tool_name,
+        result.returncode,
+        cmd,
+    )
     return SkillActionResult(
         tool_name=tool_name,
         args=args,
@@ -191,6 +201,7 @@ def render_skill_reply_pass2(
     recent_context: str = "",
 ) -> str:
     """Run pass-2 synthesis with codex exec over the action result."""
+    logger = get_logger()
     tool_output = action_result.stdout.strip()
     if not tool_output:
         tool_output = action_result.stderr.strip() or "(no output)"
@@ -220,6 +231,13 @@ def render_skill_reply_pass2(
         cwd=SKILLS_DIR.parents[0],
         check=False,
     )
+    logger.info(
+        "Pass2 completed tool=%s returncode=%s stdout_len=%s stderr_len=%s",
+        action_result.tool_name,
+        result.returncode,
+        len(result.stdout),
+        len(result.stderr),
+    )
     if result.returncode != 0:
         fallback = action_result.stdout.strip() or action_result.stderr.strip() or "技能執行完成，但整理回覆失敗。"
         return f"技能已執行，但 Pass 2 整理失敗：\n```text\n{fallback[:3500]}\n```"
@@ -228,6 +246,7 @@ def render_skill_reply_pass2(
 
 def render_general_reply(user_msg: str, *, recent_context: str = "") -> str:
     """Generate a normal Discord reply when no skill is selected."""
+    logger = get_logger()
     prompt_template = load_prompt("general_reply.md")
     prompt = prompt_template.format(
         user_msg=user_msg,
@@ -249,6 +268,12 @@ def render_general_reply(user_msg: str, *, recent_context: str = "") -> str:
         text=True,
         cwd=SKILLS_DIR.parents[0],
         check=False,
+    )
+    logger.info(
+        "General reply completed returncode=%s stdout_len=%s stderr_len=%s",
+        result.returncode,
+        len(result.stdout),
+        len(result.stderr),
     )
     if result.returncode != 0:
         return "目前無法完成一般回覆，請稍後再試。"

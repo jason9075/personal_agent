@@ -21,3 +21,4 @@ GEMINI_TOOL_MODEL = _optional_env("GEMINI_TOOL_MODEL")
 PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 SCHEDULE_DB_PATH = Path(__file__).resolve().parents[2] / "db" / "bot_scheduler.sqlite3"
+BOT_LOG_DIR = Path(_optional_env("BOT_LOG_DIR", ".local/bot/logs"))

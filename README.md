@@ -26,6 +26,8 @@ Run the bot with:
 just bot
 ```
 
+Bot runtime logs are written to `.local/bot/logs/` and also streamed to stdout. Startup, received messages, routing decisions, skill execution, Pass 2 usage, and scheduler activity are all recorded there.
+
 For auto-restart during development:
 
 ```bash
