@@ -15,7 +15,7 @@ bot:
 
 # Watch Python files and restart the bot on change
 watch:
-    find src -name '*.py' | grep -v __pycache__ | entr -r just bot
+    find src skills config -type f \( -name '*.py' -o -name '*.md' -o -name '*.toml' \) | grep -v __pycache__ | entr -r env -u PYTHONPATH python -m src.bot.bot
 
 # Remove generated finance notes only
 clean:

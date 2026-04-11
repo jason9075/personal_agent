@@ -34,6 +34,8 @@ For auto-restart during development:
 just watch
 ```
 
+`just watch` monitors changes under `src/`, `skills/`, and `config/`, including `.py`, `.md`, and `.toml` files, then restarts the bot process automatically.
+
 ## Bot Architecture
 
 The chatbot now follows a 2-pass skill pipeline:
