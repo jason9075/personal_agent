@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -13,31 +14,39 @@ from src.bot.skills import execute_schedule_action
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--action", default="list")
-    parser.add_argument("--id", type=int, default=0)
-    parser.add_argument("--name", default="")
-    parser.add_argument("--cron", default="")
-    parser.add_argument("--source", default="")
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--channel", default="")
-    args = parser.parse_args()
+    # --args-json protocol: engine passes a JSON blob as the sole argument.
+    # Fall back to individual flags for backward compatibility.
+    if "--args-json" in sys.argv:
+        idx = sys.argv.index("--args-json")
+        payload: dict[str, object] = json.loads(sys.argv[idx + 1])
+    else:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--action", default="list")
+        parser.add_argument("--id", type=int, default=0)
+        parser.add_argument("--name", default="")
+        parser.add_argument("--cron", default="")
+        parser.add_argument("--source", default="")
+        parser.add_argument("--workers", type=int, default=4)
+        parser.add_argument("--channel", default="")
+        args = parser.parse_args()
+        payload = {"action": args.action}
+        if args.id:
+            payload["id"] = args.id
+        if args.name:
+            payload["name"] = args.name
+        if args.cron:
+            payload["cron"] = args.cron
+        if args.source:
+            payload["source"] = args.source
+        if args.workers:
+            payload["workers"] = args.workers
+        channel_id = args.channel
+        print(execute_schedule_action(payload, channel_id=channel_id))
+        return 0
 
-    payload: dict[str, object] = {
-        "action": args.action,
-    }
-    if args.id:
-        payload["id"] = args.id
-    if args.name:
-        payload["name"] = args.name
-    if args.cron:
-        payload["cron"] = args.cron
-    if args.source:
-        payload["source"] = args.source
-    if args.workers:
-        payload["workers"] = args.workers
-
-    print(execute_schedule_action(payload, channel_id=args.channel))
+    # --args-json path: channel_id may be embedded in payload
+    channel_id = str(payload.pop("channel_id", "")).strip()
+    print(execute_schedule_action(payload, channel_id=channel_id))
     return 0
 
 

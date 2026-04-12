@@ -1,4 +1,17 @@
-"""Skill loading, routing, action execution, and pass-2 reply generation."""
+"""Skill execution helpers and routing utilities.
+
+Public surface used by engine.py and bot.py:
+  - SkillActionResult          — result dataclass
+  - execute_skill_generic      — generic --args-json subprocess call
+  - render_skill_reply_pass2   — Pass 2 LLM synthesis
+  - render_general_reply       — general fallback LLM reply
+  - format_direct_skill_reply  — format stdout as Discord reply
+  - execute_schedule_action    — shared impl for finance-schedule/run.py
+
+Internal routing helpers (used by engine._try_direct_route):
+  - _route_finance_report_direct
+  - _route_finance_schedule_direct
+"""
 from __future__ import annotations
 
 import json
@@ -23,175 +36,57 @@ class SkillActionResult:
     returncode: int
 
 
-@dataclass(frozen=True)
-class SkillFrontmatter:
-    name: str
-    description: str
-    bypasses_llm: bool
-    pass2_mode: str
+# ---------------------------------------------------------------------------
+# Generic skill execution (--args-json protocol)
+# ---------------------------------------------------------------------------
 
 
-def load_skill_descriptors(skills_dir: Path) -> list[dict[str, str]]:
-    """Scan skills/*/SKILL.md and return [{name, description}] from frontmatter only."""
-    descriptors: list[dict[str, str]] = []
-    if not skills_dir.exists():
-        return descriptors
-    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
-        frontmatter = load_skill_frontmatter(skill_md.parent.name, skills_dir)
-        if not frontmatter or not frontmatter.bypasses_llm:
-            continue
-        descriptors.append({
-            "name": frontmatter.name,
-            "description": frontmatter.description,
-        })
-    return descriptors
-
-
-def load_skill_frontmatter(skill_name: str, skills_dir: Path) -> SkillFrontmatter | None:
-    """Return parsed frontmatter metadata for a skill."""
-    skill_md = skills_dir / skill_name / "SKILL.md"
-    if not skill_md.exists():
-        return None
-    text = skill_md.read_text(encoding="utf-8")
-    fm_match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
-    if not fm_match:
-        return None
-    fm = fm_match.group(1)
-    name_m = re.search(r"^name:\s*(.+)$", fm, re.MULTILINE)
-    desc_m = re.search(r"^description:\s*(.+)$", fm, re.MULTILINE)
-    bypass_m = re.search(r"^\s*bypasses_llm:\s*(.+)$", fm, re.MULTILINE)
-    pass2_m = re.search(r"^\s*pass2_mode:\s*(.+)$", fm, re.MULTILINE)
-    if not name_m or not desc_m:
-        return None
-    return SkillFrontmatter(
-        name=name_m.group(1).strip(),
-        description=desc_m.group(1).strip(),
-        bypasses_llm=(bypass_m.group(1).strip().lower() == "true") if bypass_m else False,
-        pass2_mode=(pass2_m.group(1).strip().lower() if pass2_m else "always"),
-    )
-
-
-def load_skill_body(skill_name: str, skills_dir: Path) -> str:
-    """Return the body of a SKILL.md (everything after the frontmatter closing ---)."""
-    skill_md = skills_dir / skill_name / "SKILL.md"
-    if not skill_md.exists():
-        return ""
-    text = skill_md.read_text(encoding="utf-8")
-    return re.sub(r"^---\n.*?\n---\n*", "", text, flags=re.DOTALL).strip()
-
-
-def route_tool_cli(user_msg: str, recent_context: str = "") -> dict | None:
-    """Call GEMINI_TOOL_MODEL to decide which skill to invoke."""
+def execute_skill_generic(
+    skill_id: str,
+    script_path: str,
+    args: dict,
+    repo_root: Path,
+) -> SkillActionResult:
+    """Run a skill via the --args-json protocol."""
     logger = get_logger()
-    for router in (_route_finance_schedule_direct, _route_finance_report_direct):
-        direct = router(user_msg)
-        if direct:
-            logger.info("Direct route selected tool=%s args=%s", direct["tool"], direct.get("args", {}))
-            return direct
-
-    if not GEMINI_TOOL_MODEL:
-        logger.info("No GEMINI_TOOL_MODEL configured; skill router fallback disabled")
-        return None
-
-    descriptors = load_skill_descriptors(SKILLS_DIR)
-    if not descriptors:
-        return None
-
-    names = [d["name"] for d in descriptors]
-    tool_lines = "\n".join(f"- {d['name']}: {d['description']}" for d in descriptors)
-    context_block = (
-        f"Recent conversation (use this to extract query details when needed):\n"
-        f"{recent_context}\n\n"
-        if recent_context else ""
-    )
-
-    template = load_prompt("tool_router.md")
-    prompt = template.format(
-        tool_lines=tool_lines,
-        context_block=context_block,
-        user_msg=user_msg,
-    )
-
-    cmd = ["gemini", "--model", GEMINI_TOOL_MODEL, "-p", prompt]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd="/tmp", check=False)
-    if result.returncode != 0:
-        logger.warning("route_tool error: %s", result.stderr.strip()[:200])
-        return None
-
-    raw = result.stdout.strip()
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("route_tool parse failure: %s", raw[:120])
-        return None
-
-    tool_name = parsed.get("tool")
-    if tool_name not in names:
-        return None
-
-    logger.info("LLM route selected tool=%s args=%s", tool_name, parsed.get("args", {}))
-    return {"tool": tool_name, "args": parsed.get("args", {})}
-
-
-def execute_skill_action(tool_name: str, args: dict | None = None, *, channel_id: str = "") -> SkillActionResult:
-    """Execute a skill action via skills/<name>/run.py and return raw process output."""
-    logger = get_logger()
-    args = args or {}
-    skill_dir = SKILLS_DIR / tool_name
-    run_py = skill_dir / "run.py"
+    run_py = repo_root / script_path
     if not run_py.exists():
-        raise RuntimeError(f"skill run.py not found for {tool_name}")
+        raise RuntimeError(f"skill script not found: {run_py}")
 
-    cmd = ["python", str(run_py)]
-    if tool_name == "finance-report":
-        if args.get("list_sources"):
-            cmd.append("--list-sources")
-        else:
-            cmd.extend(["--workers", str(int(args.get("workers", 4)))])
-            source = str(args.get("source", "")).strip()
-            target_date = str(args.get("target_date", "")).strip()
-            if source:
-                cmd.extend(["--source", source])
-            if target_date:
-                cmd.extend(["--target-date", target_date])
-    elif tool_name == "finance-schedule":
-        cmd.extend(["--action", str(args.get("action", "list"))])
-        if "id" in args:
-            cmd.extend(["--id", str(int(args["id"]))])
-        if "name" in args and str(args["name"]).strip():
-            cmd.extend(["--name", str(args["name"]).strip()])
-        if "cron" in args and str(args["cron"]).strip():
-            cmd.extend(["--cron", str(args["cron"]).strip()])
-        if "source" in args and str(args["source"]).strip():
-            cmd.extend(["--source", str(args["source"]).strip()])
-        if "workers" in args:
-            cmd.extend(["--workers", str(int(args["workers"]))])
-        if channel_id:
-            cmd.extend(["--channel", channel_id])
-    else:
-        raise RuntimeError(f"unsupported skill action: {tool_name}")
-
+    cmd = ["python", str(run_py), "--args-json", json.dumps(args, ensure_ascii=False)]
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        cwd=SKILLS_DIR.parents[0],
+        cwd=repo_root,
         check=False,
     )
     logger.info(
-        "Executed skill action tool=%s returncode=%s cmd=%s",
-        tool_name,
+        "Executed skill skill=%s returncode=%s cmd=%s",
+        skill_id,
         result.returncode,
         cmd,
     )
     return SkillActionResult(
-        tool_name=tool_name,
+        tool_name=skill_id,
         args=args,
         stdout=result.stdout.strip(),
         stderr=result.stderr.strip(),
         returncode=result.returncode,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reply formatting
+# ---------------------------------------------------------------------------
+
+
+def format_direct_skill_reply(action_result: SkillActionResult) -> str:
+    """Return a direct Discord reply without Pass 2 synthesis."""
+    output = action_result.stdout.strip() or action_result.stderr.strip() or "(no output)"
+    if action_result.returncode != 0:
+        return f"技能執行失敗：\n```text\n{output[:3500]}\n```"
+    return output[:3500]
 
 
 def render_skill_reply_pass2(
@@ -200,7 +95,7 @@ def render_skill_reply_pass2(
     *,
     recent_context: str = "",
 ) -> str:
-    """Run pass-2 synthesis with codex exec over the action result."""
+    """Run Pass 2 synthesis with codex exec over the action result."""
     logger = get_logger()
     tool_output = action_result.stdout.strip()
     if not tool_output:
@@ -280,43 +175,13 @@ def render_general_reply(user_msg: str, *, recent_context: str = "") -> str:
     return result.stdout.strip() or "目前沒有可回覆的內容。"
 
 
-def should_use_pass2(tool_name: str, args: dict | None, action_result: SkillActionResult) -> bool:
-    """Decide whether a skill result still needs pass-2 synthesis."""
-    args = args or {}
-    metadata = load_skill_frontmatter(tool_name, SKILLS_DIR)
-    mode = metadata.pass2_mode if metadata else "always"
-
-    if mode == "never":
-        return False
-    if mode == "always":
-        return True
-
-    if mode == "optional":
-        if tool_name == "finance-schedule":
-            return False
-        if tool_name == "finance-report":
-            if args.get("list_sources"):
-                return False
-            if action_result.returncode != 0:
-                return False
-            output = action_result.stdout.strip()
-            if output.startswith("[finance]") or "note written to" in output or "reused existing note" in output:
-                return False
-            return True
-
-    return True
-
-
-def format_direct_skill_reply(action_result: SkillActionResult) -> str:
-    """Return a direct reply without pass-2 synthesis."""
-    output = action_result.stdout.strip() or action_result.stderr.strip() or "(no output)"
-    if action_result.returncode != 0:
-        return f"技能執行失敗：\n```text\n{output[:3500]}\n```"
-    return output[:3500]
+# ---------------------------------------------------------------------------
+# Finance schedule shared implementation (used by skills/finance-schedule/run.py)
+# ---------------------------------------------------------------------------
 
 
 def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
-    """Shared implementation for finance schedule run.py."""
+    """Shared implementation for finance schedule operations."""
     ensure_db(SCHEDULE_DB_PATH)
     action = str(args.get("action", "list")).strip().lower()
     if action == "list":
@@ -338,7 +203,7 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
         cron_expr = str(args.get("cron", "")).strip()
         source_id = str(args.get("source", "")).strip()
         workers = int(args.get("workers", 4))
-        target_channel = str(args.get("channel", "")).strip() or channel_id
+        target_channel = str(args.get("channel", "") or args.get("channel_id", "")).strip() or channel_id
         if not name or not cron_expr:
             raise RuntimeError("add requires name=<job_name> and cron=\"m h dom mon dow\"")
         parse_cron(cron_expr)
@@ -373,7 +238,7 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
         if source_id == "":
             source_id = ""
         workers = int(args["workers"]) if "workers" in args else None
-        target_channel = str(args.get("channel", "")).strip() or None
+        target_channel = str(args.get("channel", "") or args.get("channel_id", "")).strip() or None
         if cron_expr:
             parse_cron(cron_expr)
         job = update_job(
@@ -388,6 +253,11 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
         return f"已更新排程 #{job.id} `{job.name}`：cron=`{job.cron_expr}` source=`{job.source_id or '(all)'}` workers={job.workers}"
 
     raise RuntimeError(f"unsupported schedule action: {action}")
+
+
+# ---------------------------------------------------------------------------
+# Direct route functions (used by engine._try_direct_route)
+# ---------------------------------------------------------------------------
 
 
 def _route_finance_report_direct(user_msg: str) -> dict | None:

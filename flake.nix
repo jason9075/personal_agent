@@ -27,6 +27,11 @@
           # Data / DB
           # sqlite3 is built-in
 
+          # Web server
+          fastapi
+          uvicorn
+          aiofiles
+
           # Utilities
           python-dotenv
           tqdm

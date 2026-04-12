@@ -1,28 +1,24 @@
-"""Private Discord bot with skill-based command execution."""
+"""Private Discord bot with N-pass skill workflow execution."""
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
-from asyncio import to_thread
 from pathlib import Path
 
 import discord
+import uvicorn
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from .config import ALLOWED_USER_ID, BOT_LOG_DIR, SCHEDULE_DB_PATH
+from .config import ALLOWED_USER_ID, BOT_LOG_DIR, SCHEDULE_DB_PATH, WEB_PORT, WORKFLOW_DB_PATH
+from .engine import execute_and_synthesize, route_pass1
 from .logging_utils import get_logger, setup_logging
 from .schedule_db import ensure_db
 from .scheduler import FinanceScheduler
-from .skills import (
-    execute_skill_action,
-    format_direct_skill_reply,
-    render_general_reply,
-    render_skill_reply_pass2,
-    route_tool_cli,
-    should_use_pass2,
-)
+from .skills import render_general_reply
+from .workflow_db import ensure_workflow_db
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -35,6 +31,7 @@ logger = get_logger()
 @client.event
 async def on_ready() -> None:
     ensure_db(SCHEDULE_DB_PATH)
+    ensure_workflow_db(WORKFLOW_DB_PATH)
     scheduler.start()
     logger.info("Logged in as %s", client.user)
 
@@ -45,11 +42,19 @@ async def on_message(message: discord.Message) -> None:
         return
 
     if str(message.author.id) != ALLOWED_USER_ID:
-        logger.info("Ignored message from unauthorized user_id=%s channel_id=%s", message.author.id, message.channel.id)
+        logger.info(
+            "Ignored message from unauthorized user_id=%s channel_id=%s",
+            message.author.id,
+            message.channel.id,
+        )
         return
 
     if client.user not in message.mentions:
-        logger.info("Ignored message without bot mention from user_id=%s channel_id=%s", message.author.id, message.channel.id)
+        logger.info(
+            "Ignored message without bot mention from user_id=%s channel_id=%s",
+            message.author.id,
+            message.channel.id,
+        )
         return
 
     content = message.content
@@ -67,52 +72,55 @@ async def on_message(message: discord.Message) -> None:
         logger.info("Ignored empty mention-only message channel_id=%s", message.channel.id)
         return
 
-    routed = await to_thread(route_tool_cli, content, "")
-    if routed and routed.get("tool"):
-        logger.info("Routed to skill tool=%s args=%s", routed["tool"], routed.get("args", {}))
-        activation_message = _format_skill_activation_message(routed["tool"], routed.get("args", {}))
-        logger.info("Sending skill activation message channel_id=%s message=%r", message.channel.id, activation_message)
-        await message.channel.send(activation_message)
+    routed = await asyncio.to_thread(route_pass1, content, WORKFLOW_DB_PATH)
+    if routed:
+        node, args = routed
+        activation_msg = f"已啟用 skill: {node.skill_id}"
+        logger.info("Sending skill activation channel_id=%s msg=%r", message.channel.id, activation_msg)
+        await message.channel.send(activation_msg)
         try:
-            action_result = await to_thread(
-                execute_skill_action,
-                routed["tool"],
-                routed.get("args", {}),
-                channel_id=str(message.channel.id),
+            response = await asyncio.to_thread(
+                execute_and_synthesize,
+                content,
+                node,
+                args,
+                WORKFLOW_DB_PATH,
+                repo_root,
+                str(message.channel.id),
             )
-            logger.info(
-                "Skill action completed tool=%s returncode=%s stdout_len=%s stderr_len=%s",
-                action_result.tool_name,
-                action_result.returncode,
-                len(action_result.stdout),
-                len(action_result.stderr),
-            )
-            if await to_thread(should_use_pass2, routed["tool"], routed.get("args", {}), action_result):
-                logger.info("Using Pass2 tool=%s", routed["tool"])
-                response = await to_thread(
-                    render_skill_reply_pass2,
-                    content,
-                    action_result,
-                    recent_context="",
-                )
-            else:
-                logger.info("Skipping Pass2 tool=%s", routed["tool"])
-                response = await to_thread(format_direct_skill_reply, action_result)
         except Exception as exc:
-            logger.exception("Skill execution failed tool=%s", routed.get("tool"))
+            logger.exception("Skill execution failed skill=%s", node.skill_id)
             response = f"技能執行失敗：{type(exc).__name__}: {exc}"
         logger.info("Sending skill response channel_id=%s response_len=%s", message.channel.id, len(response))
         await message.channel.send(response)
         return
 
     logger.info("No skill matched; using general reply")
-    response = await to_thread(
-        render_general_reply,
-        content,
-        recent_context="",
-    )
+    response = await asyncio.to_thread(render_general_reply, content, recent_context="")
     logger.info("Sending general reply channel_id=%s response_len=%s", message.channel.id, len(response))
     await message.channel.send(response)
+
+
+async def _run(token: str) -> None:
+    """Run Discord bot and FastAPI web server in the same asyncio event loop."""
+    from ..web.app import create_app
+
+    web_app = create_app(WORKFLOW_DB_PATH)
+    uvicorn_config = uvicorn.Config(
+        web_app,
+        host="0.0.0.0",
+        port=WEB_PORT,
+        log_level="warning",
+    )
+    web_server = uvicorn.Server(uvicorn_config)
+    # Prevent uvicorn from overriding discord.py's signal handlers
+    web_server.config.install_signal_handlers = False
+
+    logger.info("Starting web server on port %s", WEB_PORT)
+    await asyncio.gather(
+        client.start(token),
+        web_server.serve(),
+    )
 
 
 def main() -> None:
@@ -125,22 +133,7 @@ def main() -> None:
         print("[error] ALLOWED_USER_ID not set", file=sys.stderr)
         sys.exit(1)
     logger.info("Bot startup log file: %s", log_path)
-    client.run(token)
-
-
-def _format_skill_activation_message(tool_name: str, args: dict | None) -> str:
-    args = args or {}
-    if tool_name == "finance-report":
-        if args.get("list_sources"):
-            return "已啟用 skill: finance-report，正在列出可用來源。"
-        source = str(args.get("source", "")).strip() or "全部來源"
-        target_date = str(args.get("target_date", "")).strip() or "最新一集"
-        workers = int(args.get("workers", 4))
-        return f"已啟用 skill: finance-report，正在處理 {source}，目標：{target_date}，workers={workers}。"
-    if tool_name == "finance-schedule":
-        action = str(args.get("action", "list")).strip() or "list"
-        return f"已啟用 skill: finance-schedule，正在執行 {action}。"
-    return f"已啟用 skill: {tool_name}。"
+    asyncio.run(_run(token))
 
 
 if __name__ == "__main__":
