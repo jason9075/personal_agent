@@ -13,11 +13,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .config import ALLOWED_USER_ID, BOT_LOG_DIR, SCHEDULE_DB_PATH, WEB_PORT, WORKFLOW_DB_PATH
-from .engine import execute_and_synthesize, route_pass1
+from .engine import execute_workflow
 from .logging_utils import get_logger, setup_logging
 from .schedule_db import ensure_db
 from .scheduler import FinanceScheduler
-from .skills import render_general_reply
 from .workflow_db import ensure_workflow_db
 
 intents = discord.Intents.default()
@@ -72,32 +71,19 @@ async def on_message(message: discord.Message) -> None:
         logger.info("Ignored empty mention-only message channel_id=%s", message.channel.id)
         return
 
-    routed = await asyncio.to_thread(route_pass1, content, WORKFLOW_DB_PATH)
-    if routed:
-        node, args = routed
-        activation_msg = f"已啟用 skill: {node.skill_id}"
-        logger.info("Sending skill activation channel_id=%s msg=%r", message.channel.id, activation_msg)
-        await message.channel.send(activation_msg)
-        try:
-            response = await asyncio.to_thread(
-                execute_and_synthesize,
-                content,
-                node,
-                args,
-                WORKFLOW_DB_PATH,
-                repo_root,
-                str(message.channel.id),
-            )
-        except Exception as exc:
-            logger.exception("Skill execution failed skill=%s", node.skill_id)
-            response = f"技能執行失敗：{type(exc).__name__}: {exc}"
-        logger.info("Sending skill response channel_id=%s response_len=%s", message.channel.id, len(response))
-        await message.channel.send(response)
-        return
-
-    logger.info("No skill matched; using general reply")
-    response = await asyncio.to_thread(render_general_reply, content, recent_context="")
-    logger.info("Sending general reply channel_id=%s response_len=%s", message.channel.id, len(response))
+    try:
+        response = await asyncio.to_thread(
+            execute_workflow,
+            content,
+            WORKFLOW_DB_PATH,
+            repo_root,
+            recent_context="",
+            channel_id=str(message.channel.id),
+        )
+    except Exception as exc:
+        logger.exception("Workflow execution failed")
+        response = f"工作流執行失敗：{type(exc).__name__}: {exc}"
+    logger.info("Sending workflow response channel_id=%s response_len=%s", message.channel.id, len(response))
     await message.channel.send(response)
 
 

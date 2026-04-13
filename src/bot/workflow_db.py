@@ -1,9 +1,4 @@
-"""SQLite-backed skills and workflow graph storage.
-
-Skills replace SKILL.md files — metadata managed via DB (and future web UI).
-WorkflowGraph defines which skills are available at each pass and how passes
-connect to each other via conditional edges.
-"""
+"""SQLite-backed node-first workflow graph storage."""
 from __future__ import annotations
 
 import json
@@ -11,36 +6,34 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .skills import SkillActionResult
-
-
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class SkillDef:
-    id: str
-    display_name: str
-    description: str
-    router_mode: str            # 'direct_regex' | 'llm' | 'always'
-    router_patterns: list[str]  # named-group regex strings
-    script_path: str            # relative to repo root, e.g. "skills/echo/run.py"
-    system_prompt: str
-    pass2_mode: str             # 'never' | 'always' | 'optional'
-    enabled: bool
 
 
 @dataclass(frozen=True)
 class WorkflowNode:
-    id: str           # e.g. "p1:finance-report"
+    id: str
+    name: str
+    description: str
+    node_type: str
     pass_index: int
-    skill_id: str
+    start_node: bool
     enabled: bool
+    executor_path: str
+    pre_hook_path: str | None
+    post_hook_path: str | None
+    system_prompt_path: str | None
+    prompt_template_path: str | None
+    use_prev_output: bool
+    allowed_tools: list[str]
+    send_response: bool
+    input_schema: dict | None
+    output_schema: dict | None
+    timeout_seconds: int
+    max_llm_calls: int
+    route_label: str | None
+    route_description: str | None
+    router_mode: str
+    router_patterns: list[str]
+    metadata: dict
 
 
 @dataclass(frozen=True)
@@ -48,7 +41,7 @@ class WorkflowEdge:
     id: int
     from_node_id: str
     to_node_id: str
-    condition_type: str   # 'always' | 'returncode_eq' | 'output_contains'
+    condition_type: str
     condition_value: str
 
 
@@ -56,68 +49,54 @@ class WorkflowEdge:
 class WorkflowGraph:
     nodes: list[WorkflowNode]
     edges: list[WorkflowEdge]
-    skills: dict[str, SkillDef]   # skill_id -> SkillDef
 
-    def nodes_at_pass(self, pass_index: int) -> list[WorkflowNode]:
-        return [n for n in self.nodes if n.pass_index == pass_index and n.enabled]
+    def enabled_nodes(self) -> list[WorkflowNode]:
+        return [node for node in self.nodes if node.enabled]
 
-    def skill_for_node(self, node: WorkflowNode) -> SkillDef | None:
-        return self.skills.get(node.skill_id)
+    def node_by_id(self, node_id: str) -> WorkflowNode | None:
+        return next((node for node in self.nodes if node.id == node_id), None)
 
-    def successors(self, from_node_id: str, result: SkillActionResult) -> list[WorkflowNode]:
-        """Return enabled successor nodes whose edge conditions are satisfied."""
-        reachable_ids = {
-            e.to_node_id
-            for e in self.edges
-            if e.from_node_id == from_node_id and _edge_condition_met(e, result)
-        }
-        return [n for n in self.nodes if n.id in reachable_ids and n.enabled]
+    def start_node(self) -> WorkflowNode | None:
+        return next((node for node in self.nodes if node.start_node and node.enabled), None)
 
-    @property
-    def max_passes(self) -> int:
-        if not self.nodes:
-            return 1
-        return max(n.pass_index for n in self.nodes)
+    def outgoing(self, from_node_id: str) -> list[WorkflowEdge]:
+        return [edge for edge in self.edges if edge.from_node_id == from_node_id]
 
+    def candidate_targets(self, from_node_id: str) -> list[WorkflowNode]:
+        candidate_ids = [edge.to_node_id for edge in self.outgoing(from_node_id)]
+        return [
+            node
+            for node in self.enabled_nodes()
+            if node.id in candidate_ids
+        ]
 
-def _edge_condition_met(edge: WorkflowEdge, result: SkillActionResult) -> bool:
-    if edge.condition_type == "always":
-        return True
-    if edge.condition_type == "returncode_eq":
-        try:
-            return result.returncode == int(edge.condition_value)
-        except (ValueError, TypeError):
-            return False
-    if edge.condition_type == "output_contains":
-        return edge.condition_value in (result.stdout or "")
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Schema
-# ---------------------------------------------------------------------------
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS skills (
-    id TEXT PRIMARY KEY,
-    display_name TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    router_mode TEXT NOT NULL DEFAULT 'llm',
-    router_patterns TEXT NOT NULL DEFAULT '[]',
-    script_path TEXT NOT NULL DEFAULT '',
-    system_prompt TEXT NOT NULL DEFAULT '',
-    pass2_mode TEXT NOT NULL DEFAULT 'always',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS workflow_nodes (
     id TEXT PRIMARY KEY,
-    pass_index INTEGER NOT NULL,
-    skill_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    node_type TEXT NOT NULL DEFAULT 'agent',
+    pass_index INTEGER NOT NULL DEFAULT 1,
+    start_node INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
-    FOREIGN KEY (skill_id) REFERENCES skills(id)
+    executor_path TEXT NOT NULL DEFAULT '',
+    pre_hook_path TEXT NOT NULL DEFAULT '',
+    post_hook_path TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    prompt_template TEXT NOT NULL DEFAULT '',
+    use_prev_output INTEGER NOT NULL DEFAULT 1,
+    allowed_tools TEXT NOT NULL DEFAULT '[]',
+    send_response INTEGER NOT NULL DEFAULT 1,
+    input_schema TEXT NOT NULL DEFAULT '',
+    output_schema TEXT NOT NULL DEFAULT '',
+    timeout_seconds INTEGER NOT NULL DEFAULT 600,
+    max_llm_calls INTEGER NOT NULL DEFAULT 0,
+    route_label TEXT NOT NULL DEFAULT '',
+    route_description TEXT NOT NULL DEFAULT '',
+    router_mode TEXT NOT NULL DEFAULT 'llm',
+    router_patterns TEXT NOT NULL DEFAULT '[]',
+    metadata TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS workflow_edges (
@@ -131,225 +110,512 @@ CREATE TABLE IF NOT EXISTS workflow_edges (
 );
 """
 
-# ---------------------------------------------------------------------------
-# Seed data
-# ---------------------------------------------------------------------------
+_NODE_COLUMNS: dict[str, str] = {
+    "name": "TEXT NOT NULL DEFAULT ''",
+    "description": "TEXT NOT NULL DEFAULT ''",
+    "node_type": "TEXT NOT NULL DEFAULT 'agent'",
+    "pass_index": "INTEGER NOT NULL DEFAULT 1",
+    "start_node": "INTEGER NOT NULL DEFAULT 0",
+    "enabled": "INTEGER NOT NULL DEFAULT 1",
+    "executor_path": "TEXT NOT NULL DEFAULT ''",
+    "pre_hook_path": "TEXT NOT NULL DEFAULT ''",
+    "post_hook_path": "TEXT NOT NULL DEFAULT ''",
+    "system_prompt": "TEXT NOT NULL DEFAULT ''",
+    "prompt_template": "TEXT NOT NULL DEFAULT ''",
+    "system_prompt_path": "TEXT NOT NULL DEFAULT ''",
+    "prompt_template_path": "TEXT NOT NULL DEFAULT ''",
+    "use_prev_output": "INTEGER NOT NULL DEFAULT 1",
+    "allowed_tools": "TEXT NOT NULL DEFAULT '[]'",
+    "send_response": "INTEGER NOT NULL DEFAULT 1",
+    "input_schema": "TEXT NOT NULL DEFAULT ''",
+    "output_schema": "TEXT NOT NULL DEFAULT ''",
+    "timeout_seconds": "INTEGER NOT NULL DEFAULT 600",
+    "max_llm_calls": "INTEGER NOT NULL DEFAULT 0",
+    "route_label": "TEXT NOT NULL DEFAULT ''",
+    "route_description": "TEXT NOT NULL DEFAULT ''",
+    "router_mode": "TEXT NOT NULL DEFAULT 'llm'",
+    "router_patterns": "TEXT NOT NULL DEFAULT '[]'",
+    "metadata": "TEXT NOT NULL DEFAULT '{}'",
+}
 
-_SEED_SKILLS: list[dict] = [
-    {
-        "id": "finance-report",
-        "display_name": "Finance Report",
-        "description": (
-            "Generate finance report from RSS feed sources. "
-            "Triggered by keywords: finance, report, 財經, 報告, 來源, source."
-        ),
-        "router_mode": "direct_regex",
-        "router_patterns": json.dumps([]),
-        "script_path": "skills/finance-report/run.py",
-        "system_prompt": "",
-        "pass2_mode": "optional",
-    },
-    {
-        "id": "finance-schedule",
-        "display_name": "Finance Schedule",
-        "description": (
-            "Manage scheduled finance report jobs (list/add/update/delete/enable/disable). "
-            "Triggered by: schedule, cron, 排程 combined with finance/財經."
-        ),
-        "router_mode": "direct_regex",
-        "router_patterns": json.dumps([]),
-        "script_path": "skills/finance-schedule/run.py",
-        "system_prompt": "",
-        "pass2_mode": "never",
-    },
-    {
-        "id": "echo",
-        "display_name": "Echo",
-        "description": "Echo skill for testing Pass 1 routing and direct reply. Triggered by: '啟用echo skill <text>'.",
-        "router_mode": "direct_regex",
-        "router_patterns": json.dumps([r"啟用echo skill\s+(?P<text>.+)"]),
-        "script_path": "skills/echo/run.py",
-        "system_prompt": "",
-        "pass2_mode": "never",
-    },
+
+_SEED_NODES: list[WorkflowNode] = [
+    WorkflowNode(
+        id="route",
+        name="Intent Router",
+        description="Workflow entrypoint. Routes the incoming message to one of its connected nodes.",
+        node_type="router",
+        pass_index=1,
+        start_node=True,
+        enabled=True,
+        executor_path="",
+        pre_hook_path=None,
+        post_hook_path=None,
+        system_prompt_path="nodes/route/system.md",
+        prompt_template_path=None,
+        use_prev_output=False,
+        allowed_tools=[],
+        send_response=False,
+        input_schema=None,
+        output_schema={"type": "object"},
+        timeout_seconds=60,
+        max_llm_calls=1,
+        route_label=None,
+        route_description=None,
+        router_mode="llm",
+        router_patterns=[],
+        metadata={},
+    ),
+    WorkflowNode(
+        id="finance-report",
+        name="Finance Report",
+        description="Run the finance RSS pipeline, transcribe audio, and generate a markdown digest.",
+        node_type="agent",
+        pass_index=2,
+        start_node=False,
+        enabled=True,
+        executor_path="skills/finance-report/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        system_prompt_path="nodes/finance-report/system.md",
+        prompt_template_path=None,
+        use_prev_output=True,
+        allowed_tools=[],
+        send_response=True,
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        timeout_seconds=7200,
+        max_llm_calls=1,
+        route_label="finance-report",
+        route_description="當使用者要求財經報告、財經摘要、指定來源節目整理、或指定日期報告時使用。",
+        router_mode="direct_regex",
+        router_patterns=[],
+        metadata={},
+    ),
+    WorkflowNode(
+        id="finance-schedule",
+        name="Finance Schedule",
+        description="Manage finance report schedules stored in SQLite.",
+        node_type="tool",
+        pass_index=2,
+        start_node=False,
+        enabled=True,
+        executor_path="skills/finance-schedule/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        system_prompt_path=None,
+        prompt_template_path=None,
+        use_prev_output=True,
+        allowed_tools=[],
+        send_response=True,
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        timeout_seconds=60,
+        max_llm_calls=0,
+        route_label="finance-schedule",
+        route_description="當使用者要求新增、修改、刪除、列出或啟停財經報告排程時使用。",
+        router_mode="direct_regex",
+        router_patterns=[],
+        metadata={},
+    ),
+    WorkflowNode(
+        id="general-reply",
+        name="General Reply",
+        description="Produce a normal LLM reply when no workflow-specific node is more suitable.",
+        node_type="agent",
+        pass_index=2,
+        start_node=False,
+        enabled=True,
+        executor_path="skills/general-reply/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        system_prompt_path="nodes/general-reply/system.md",
+        prompt_template_path=None,
+        use_prev_output=True,
+        allowed_tools=[],
+        send_response=True,
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        timeout_seconds=120,
+        max_llm_calls=1,
+        route_label="general-reply",
+        route_description="當使用者只是一般對話、詢問 bot 能做什麼，或沒有其他明確工作流符合時使用。",
+        router_mode="llm",
+        router_patterns=[],
+        metadata={},
+    ),
+    WorkflowNode(
+        id="echo",
+        name="Echo",
+        description="Testing node that returns the extracted text directly.",
+        node_type="tool",
+        pass_index=2,
+        start_node=False,
+        enabled=True,
+        executor_path="skills/echo/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        system_prompt_path=None,
+        prompt_template_path=None,
+        use_prev_output=True,
+        allowed_tools=[],
+        send_response=True,
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        timeout_seconds=30,
+        max_llm_calls=0,
+        route_label="echo",
+        route_description="當使用者要求測試 echo 或回傳一段原文時使用。",
+        router_mode="direct_regex",
+        router_patterns=[r"啟用echo skill\s+(?P<text>.+)"],
+        metadata={},
+    ),
 ]
 
-_SEED_NODES: list[dict] = [
-    {"id": "p1:finance-report",   "pass_index": 1, "skill_id": "finance-report"},
-    {"id": "p1:finance-schedule", "pass_index": 1, "skill_id": "finance-schedule"},
-    {"id": "p1:echo",             "pass_index": 1, "skill_id": "echo"},
+_SEED_EDGES: list[tuple[str, str]] = [
+    ("route", "finance-report"),
+    ("route", "finance-schedule"),
+    ("route", "general-reply"),
+    ("route", "echo"),
 ]
-
-# No edges for now — pass2_mode on each SkillDef controls synthesis.
-# Future: add "p1:finance-report → p2:synthesis" edges here.
-_SEED_EDGES: list[dict] = []
-
-
-# ---------------------------------------------------------------------------
-# DB lifecycle
-# ---------------------------------------------------------------------------
 
 
 def ensure_workflow_db(db_path: Path) -> None:
-    """Create tables and seed initial data if the DB is empty."""
+    """Create tables, migrate columns, and seed base workflow."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(_SCHEMA)
+        _ensure_node_columns(conn)
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS workflow_single_start_node
+            ON workflow_nodes(start_node)
+            WHERE start_node = 1
+            """
+        )
+        _migrate_legacy_nodes(conn)
+        _seed_nodes_and_edges(conn)
         conn.commit()
-        # Seed only if empty
-        count = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
-        if count == 0:
-            _seed(conn)
 
 
-def _seed(conn: sqlite3.Connection) -> None:
-    for s in _SEED_SKILLS:
+def _ensure_node_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(workflow_nodes)")}
+    for column, ddl in _NODE_COLUMNS.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE workflow_nodes ADD COLUMN {column} {ddl}")
+
+
+def _migrate_legacy_nodes(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_nodes)")}
+    has_skill_id = "skill_id" in columns
+
+    conn.execute("UPDATE workflow_nodes SET name = id WHERE name = ''")
+    conn.execute("UPDATE workflow_nodes SET route_label = name WHERE route_label = ''")
+    conn.execute("UPDATE workflow_nodes SET route_description = description WHERE route_description = ''")
+
+    if has_skill_id:
         conn.execute(
             """
-            INSERT OR IGNORE INTO skills
-              (id, display_name, description, router_mode, router_patterns,
-               script_path, system_prompt, pass2_mode)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                s["id"], s["display_name"], s["description"], s["router_mode"],
-                s["router_patterns"], s["script_path"], s["system_prompt"], s["pass2_mode"],
-            ),
+            UPDATE workflow_nodes
+            SET executor_path = CASE skill_id
+                WHEN 'finance-report' THEN 'skills/finance-report/run.py'
+                WHEN 'finance-schedule' THEN 'skills/finance-schedule/run.py'
+                WHEN 'echo' THEN 'skills/echo/run.py'
+                ELSE executor_path
+            END
+            WHERE executor_path = ''
+            """
         )
-    for n in _SEED_NODES:
-        conn.execute(
-            "INSERT OR IGNORE INTO workflow_nodes (id, pass_index, skill_id) VALUES (?, ?, ?)",
-            (n["id"], n["pass_index"], n["skill_id"]),
-        )
-    for e in _SEED_EDGES:
         conn.execute(
             """
-            INSERT OR IGNORE INTO workflow_edges
-              (from_node_id, to_node_id, condition_type, condition_value)
-            VALUES (?, ?, ?, ?)
-            """,
-            (e["from"], e["to"], e.get("condition_type", "always"), e.get("condition_value", "")),
+            UPDATE workflow_nodes
+            SET router_mode = CASE skill_id
+                WHEN 'finance-report' THEN 'direct_regex'
+                WHEN 'finance-schedule' THEN 'direct_regex'
+                WHEN 'echo' THEN 'direct_regex'
+                ELSE router_mode
+            END
+            WHERE router_mode = ''
+            """
         )
-    conn.commit()
 
+    conn.execute(
+        """
+        UPDATE workflow_nodes
+        SET system_prompt_path = CASE id
+            WHEN 'route' THEN 'nodes/route/system.md'
+            WHEN 'finance-report' THEN 'nodes/finance-report/system.md'
+            WHEN 'general-reply' THEN 'nodes/general-reply/system.md'
+            ELSE system_prompt_path
+        END
+        WHERE system_prompt_path = ''
+        """
+    )
+    conn.execute(
+        """
+        UPDATE workflow_nodes
+        SET system_prompt_path = CASE
+            WHEN id LIKE '%:finance-report' THEN 'nodes/finance-report/system.md'
+            WHEN id LIKE '%:general-reply' THEN 'nodes/general-reply/system.md'
+            WHEN id LIKE '%:route' THEN 'nodes/route/system.md'
+            ELSE system_prompt_path
+        END
+        WHERE system_prompt_path = ''
+        """
+    )
 
-# ---------------------------------------------------------------------------
-# Read
-# ---------------------------------------------------------------------------
-
-
-def load_workflow_graph(db_path: Path) -> WorkflowGraph:
-    """Load the full workflow graph (nodes + edges + skills) from DB."""
-    with sqlite3.connect(db_path) as conn:
-        skill_rows = conn.execute(
-            "SELECT id, display_name, description, router_mode, router_patterns, "
-            "script_path, system_prompt, pass2_mode, enabled FROM skills"
-        ).fetchall()
-        node_rows = conn.execute(
-            "SELECT id, pass_index, skill_id, enabled FROM workflow_nodes"
-        ).fetchall()
-        edge_rows = conn.execute(
-            "SELECT id, from_node_id, to_node_id, condition_type, condition_value FROM workflow_edges"
-        ).fetchall()
-
-    skills = {
-        row[0]: SkillDef(
-            id=row[0],
-            display_name=row[1],
-            description=row[2],
-            router_mode=row[3],
-            router_patterns=json.loads(row[4] or "[]"),
-            script_path=row[5],
-            system_prompt=row[6],
-            pass2_mode=row[7],
-            enabled=bool(row[8]),
-        )
-        for row in skill_rows
-    }
-    nodes = [WorkflowNode(id=r[0], pass_index=r[1], skill_id=r[2], enabled=bool(r[3])) for r in node_rows]
-    edges = [WorkflowEdge(id=r[0], from_node_id=r[1], to_node_id=r[2], condition_type=r[3], condition_value=r[4]) for r in edge_rows]
-    return WorkflowGraph(nodes=nodes, edges=edges, skills=skills)
-
-
-def get_skill(db_path: Path, skill_id: str) -> SkillDef | None:
-    with sqlite3.connect(db_path) as conn:
+    start_count = conn.execute(
+        "SELECT COUNT(*) FROM workflow_nodes WHERE start_node = 1"
+    ).fetchone()[0]
+    if start_count == 0 and conn.execute("SELECT COUNT(*) FROM workflow_nodes").fetchone()[0] > 0:
         row = conn.execute(
-            "SELECT id, display_name, description, router_mode, router_patterns, "
-            "script_path, system_prompt, pass2_mode, enabled FROM skills WHERE id = ?",
-            (skill_id,),
+            "SELECT id FROM workflow_nodes WHERE id = 'route' LIMIT 1"
         ).fetchone()
-    if row is None:
-        return None
-    return SkillDef(
-        id=row[0], display_name=row[1], description=row[2], router_mode=row[3],
-        router_patterns=json.loads(row[4] or "[]"), script_path=row[5],
-        system_prompt=row[6], pass2_mode=row[7], enabled=bool(row[8]),
+        if row:
+            conn.execute("UPDATE workflow_nodes SET start_node = 1 WHERE id = 'route'")
+
+
+def _seed_nodes_and_edges(conn: sqlite3.Connection) -> None:
+    count = conn.execute("SELECT COUNT(*) FROM workflow_nodes").fetchone()[0]
+    if count == 0:
+        for node in _SEED_NODES:
+            _upsert_node_conn(conn, node)
+        for from_id, to_id in _SEED_EDGES:
+            _upsert_edge_conn(
+                conn,
+                WorkflowEdge(
+                    id=0,
+                    from_node_id=from_id,
+                    to_node_id=to_id,
+                    condition_type="always",
+                    condition_value="",
+                ),
+            )
+        return
+
+    existing_ids = {row[0] for row in conn.execute("SELECT id FROM workflow_nodes")}
+    if "route" not in existing_ids:
+        _upsert_node_conn(conn, _SEED_NODES[0])
+    if "general-reply" not in existing_ids:
+        _upsert_node_conn(conn, next(node for node in _SEED_NODES if node.id == "general-reply"))
+
+    existing_ids = {row[0] for row in conn.execute("SELECT id FROM workflow_nodes")}
+    for from_id, to_id in _SEED_EDGES:
+        resolved_to_id = _resolve_existing_node_id(conn, to_id)
+        if from_id in existing_ids and resolved_to_id in existing_ids:
+            exists = conn.execute(
+                "SELECT 1 FROM workflow_edges WHERE from_node_id = ? AND to_node_id = ? LIMIT 1",
+                (from_id, resolved_to_id),
+            ).fetchone()
+            if not exists:
+                _upsert_edge_conn(
+                    conn,
+                    WorkflowEdge(
+                        id=0,
+                        from_node_id=from_id,
+                        to_node_id=resolved_to_id,
+                        condition_type="always",
+                        condition_value="",
+                    ),
+                )
+
+
+def _resolve_existing_node_id(conn: sqlite3.Connection, wanted_id: str) -> str:
+    direct = conn.execute(
+        "SELECT id FROM workflow_nodes WHERE id = ? LIMIT 1",
+        (wanted_id,),
+    ).fetchone()
+    if direct:
+        return direct[0]
+
+    skill_columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_nodes)")}
+    if "skill_id" in skill_columns:
+        by_skill = conn.execute(
+            "SELECT id FROM workflow_nodes WHERE skill_id = ? ORDER BY pass_index ASC, id ASC LIMIT 1",
+            (wanted_id,),
+        ).fetchone()
+        if by_skill:
+            return by_skill[0]
+
+    legacy = conn.execute(
+        "SELECT id FROM workflow_nodes WHERE id LIKE ? ORDER BY pass_index ASC, id ASC LIMIT 1",
+        (f"%:{wanted_id}",),
+    ).fetchone()
+    return legacy[0] if legacy else wanted_id
+
+
+def _json_load(value: str, fallback: object) -> object:
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return fallback
+
+
+def _row_to_node(row: sqlite3.Row | tuple) -> WorkflowNode:
+    return WorkflowNode(
+        id=row[0],
+        name=row[1],
+        description=row[2],
+        node_type=row[3],
+        pass_index=int(row[4]),
+        start_node=bool(row[5]),
+        enabled=bool(row[6]),
+        executor_path=row[7],
+        pre_hook_path=row[8] or None,
+        post_hook_path=row[9] or None,
+        system_prompt_path=row[10] or None,
+        prompt_template_path=row[11] or None,
+        use_prev_output=bool(row[12]),
+        allowed_tools=list(_json_load(row[13], [])),
+        send_response=bool(row[14]),
+        input_schema=_json_load(row[15], None),
+        output_schema=_json_load(row[16], None),
+        timeout_seconds=int(row[17]),
+        max_llm_calls=int(row[18]),
+        route_label=row[19] or None,
+        route_description=row[20] or None,
+        router_mode=row[21] or "llm",
+        router_patterns=list(_json_load(row[22], [])),
+        metadata=dict(_json_load(row[23], {})),
     )
 
 
-def list_skills(db_path: Path) -> list[SkillDef]:
+def load_workflow_graph(db_path: Path) -> WorkflowGraph:
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, display_name, description, router_mode, router_patterns, "
-            "script_path, system_prompt, pass2_mode, enabled FROM skills ORDER BY id"
-        ).fetchall()
-    return [
-        SkillDef(
-            id=r[0], display_name=r[1], description=r[2], router_mode=r[3],
-            router_patterns=json.loads(r[4] or "[]"), script_path=r[5],
-            system_prompt=r[6], pass2_mode=r[7], enabled=bool(r[8]),
-        )
-        for r in rows
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Write (used by web UI)
-# ---------------------------------------------------------------------------
-
-
-def upsert_skill(db_path: Path, skill: SkillDef) -> None:
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
             """
-            INSERT INTO skills
-              (id, display_name, description, router_mode, router_patterns,
-               script_path, system_prompt, pass2_mode, enabled, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(id) DO UPDATE SET
-              display_name = excluded.display_name,
-              description = excluded.description,
-              router_mode = excluded.router_mode,
-              router_patterns = excluded.router_patterns,
-              script_path = excluded.script_path,
-              system_prompt = excluded.system_prompt,
-              pass2_mode = excluded.pass2_mode,
-              enabled = excluded.enabled,
-              updated_at = excluded.updated_at
-            """,
-            (
-                skill.id, skill.display_name, skill.description, skill.router_mode,
-                json.dumps(skill.router_patterns), skill.script_path,
-                skill.system_prompt, skill.pass2_mode, 1 if skill.enabled else 0,
-            ),
+            SELECT id, name, description, node_type, pass_index, start_node, enabled,
+                   executor_path, pre_hook_path, post_hook_path,
+                   COALESCE(NULLIF(system_prompt_path, ''), '') AS system_prompt_path,
+                   COALESCE(NULLIF(prompt_template_path, ''), '') AS prompt_template_path,
+                   use_prev_output, allowed_tools, send_response,
+                   input_schema, output_schema, timeout_seconds, max_llm_calls,
+                   route_label, route_description, router_mode, router_patterns, metadata
+            FROM workflow_nodes
+            ORDER BY pass_index ASC, id ASC
+            """
+        ).fetchall()
+        edge_rows = conn.execute(
+            "SELECT id, from_node_id, to_node_id, condition_type, condition_value FROM workflow_edges ORDER BY id ASC"
+        ).fetchall()
+
+    nodes = [_row_to_node(row) for row in rows]
+    edges = [
+        WorkflowEdge(
+            id=int(row[0]),
+            from_node_id=row[1],
+            to_node_id=row[2],
+            condition_type=row[3],
+            condition_value=row[4],
         )
-        conn.commit()
+        for row in edge_rows
+    ]
+    return WorkflowGraph(nodes=nodes, edges=edges)
+
+
+def list_nodes(db_path: Path) -> list[WorkflowNode]:
+    return load_workflow_graph(db_path).nodes
+
+
+def get_node(db_path: Path, node_id: str) -> WorkflowNode | None:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, description, node_type, pass_index, start_node, enabled,
+                   executor_path, pre_hook_path, post_hook_path,
+                   COALESCE(NULLIF(system_prompt_path, ''), '') AS system_prompt_path,
+                   COALESCE(NULLIF(prompt_template_path, ''), '') AS prompt_template_path,
+                   use_prev_output, allowed_tools, send_response,
+                   input_schema, output_schema, timeout_seconds, max_llm_calls,
+                   route_label, route_description, router_mode, router_patterns, metadata
+            FROM workflow_nodes
+            WHERE id = ?
+            """,
+            (node_id,),
+        ).fetchone()
+    return _row_to_node(row) if row else None
 
 
 def upsert_node(db_path: Path, node: WorkflowNode) -> None:
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO workflow_nodes (id, pass_index, skill_id, enabled)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              pass_index = excluded.pass_index,
-              skill_id = excluded.skill_id,
-              enabled = excluded.enabled
-            """,
-            (node.id, node.pass_index, node.skill_id, 1 if node.enabled else 0),
-        )
+        _upsert_node_conn(conn, node)
         conn.commit()
+
+
+def _upsert_node_conn(conn: sqlite3.Connection, node: WorkflowNode) -> None:
+    if node.start_node:
+        conn.execute("UPDATE workflow_nodes SET start_node = 0 WHERE start_node = 1 AND id != ?", (node.id,))
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_nodes)")}
+    has_skill_id = "skill_id" in columns
+
+    insert_columns = [
+        "id",
+        "name",
+        "description",
+        "node_type",
+        "pass_index",
+        "start_node",
+        "enabled",
+        "executor_path",
+        "pre_hook_path",
+        "post_hook_path",
+        "system_prompt_path",
+        "prompt_template_path",
+        "use_prev_output",
+        "allowed_tools",
+        "send_response",
+        "input_schema",
+        "output_schema",
+        "timeout_seconds",
+        "max_llm_calls",
+        "route_label",
+        "route_description",
+        "router_mode",
+        "router_patterns",
+        "metadata",
+    ]
+    values: list[object] = [
+        node.id,
+        node.name,
+        node.description,
+        node.node_type,
+        node.pass_index,
+        1 if node.start_node else 0,
+        1 if node.enabled else 0,
+        node.executor_path,
+        node.pre_hook_path or "",
+        node.post_hook_path or "",
+        node.system_prompt_path or "",
+        node.prompt_template_path or "",
+        1 if node.use_prev_output else 0,
+        json.dumps(node.allowed_tools, ensure_ascii=False),
+        1 if node.send_response else 0,
+        json.dumps(node.input_schema, ensure_ascii=False) if node.input_schema is not None else "",
+        json.dumps(node.output_schema, ensure_ascii=False) if node.output_schema is not None else "",
+        node.timeout_seconds,
+        node.max_llm_calls,
+        node.route_label or "",
+        node.route_description or "",
+        node.router_mode,
+        json.dumps(node.router_patterns, ensure_ascii=False),
+        json.dumps(node.metadata, ensure_ascii=False),
+    ]
+    if has_skill_id:
+        insert_columns.insert(1, "skill_id")
+        values.insert(1, node.id)
+
+    update_columns = [column for column in insert_columns if column != "id" and column != "skill_id"]
+    conn.execute(
+        f"""
+        INSERT INTO workflow_nodes ({", ".join(insert_columns)})
+        VALUES ({", ".join(["?"] * len(insert_columns))})
+        ON CONFLICT(id) DO UPDATE SET
+            {", ".join(f"{column} = excluded.{column}" for column in update_columns)}
+        """,
+        values,
+    )
 
 
 def delete_node(db_path: Path, node_id: str) -> None:
@@ -361,25 +627,37 @@ def delete_node(db_path: Path, node_id: str) -> None:
 
 def upsert_edge(db_path: Path, edge: WorkflowEdge) -> WorkflowEdge:
     with sqlite3.connect(db_path) as conn:
-        if edge.id:
-            conn.execute(
-                "UPDATE workflow_edges SET from_node_id=?, to_node_id=?, condition_type=?, condition_value=? WHERE id=?",
-                (edge.from_node_id, edge.to_node_id, edge.condition_type, edge.condition_value, edge.id),
-            )
-            conn.commit()
-            return edge
-        cursor = conn.execute(
-            "INSERT INTO workflow_edges (from_node_id, to_node_id, condition_type, condition_value) VALUES (?, ?, ?, ?)",
-            (edge.from_node_id, edge.to_node_id, edge.condition_type, edge.condition_value),
-        )
+        saved = _upsert_edge_conn(conn, edge)
         conn.commit()
-        return WorkflowEdge(
-            id=int(cursor.lastrowid),
-            from_node_id=edge.from_node_id,
-            to_node_id=edge.to_node_id,
-            condition_type=edge.condition_type,
-            condition_value=edge.condition_value,
+        return saved
+
+
+def _upsert_edge_conn(conn: sqlite3.Connection, edge: WorkflowEdge) -> WorkflowEdge:
+    if edge.id:
+        conn.execute(
+            """
+            UPDATE workflow_edges
+            SET from_node_id = ?, to_node_id = ?, condition_type = ?, condition_value = ?
+            WHERE id = ?
+            """,
+            (edge.from_node_id, edge.to_node_id, edge.condition_type, edge.condition_value, edge.id),
         )
+        return edge
+
+    cursor = conn.execute(
+        """
+        INSERT INTO workflow_edges (from_node_id, to_node_id, condition_type, condition_value)
+        VALUES (?, ?, ?, ?)
+        """,
+        (edge.from_node_id, edge.to_node_id, edge.condition_type, edge.condition_value),
+    )
+    return WorkflowEdge(
+        id=int(cursor.lastrowid),
+        from_node_id=edge.from_node_id,
+        to_node_id=edge.to_node_id,
+        condition_type=edge.condition_type,
+        condition_value=edge.condition_value,
+    )
 
 
 def delete_edge(db_path: Path, edge_id: int) -> None:
@@ -388,15 +666,42 @@ def delete_edge(db_path: Path, edge_id: int) -> None:
         conn.commit()
 
 
-# ---------------------------------------------------------------------------
-# Pattern matching helper (used by engine)
-# ---------------------------------------------------------------------------
+def detect_node_hooks(node: WorkflowNode, repo_root: Path) -> dict[str, object]:
+    """Return UI-facing lifecycle information by scanning the node directory."""
+    base_dir = None
+    if node.executor_path:
+        base_dir = (repo_root / node.executor_path).resolve().parent
+    elif node.pre_hook_path:
+        base_dir = (repo_root / node.pre_hook_path).resolve().parent
+    elif node.post_hook_path:
+        base_dir = (repo_root / node.post_hook_path).resolve().parent
+
+    def _resolve(explicit: str | None, filename: str) -> str | None:
+        if explicit:
+            return explicit
+        if base_dir:
+            candidate = base_dir / filename
+            if candidate.exists():
+                return str(candidate.relative_to(repo_root))
+        return None
+
+    effective_pre = _resolve(node.pre_hook_path, "pre_hook.py")
+    effective_post = _resolve(node.post_hook_path, "post_hook.py")
+    effective_run = node.executor_path or _resolve(None, "run.py")
+
+    return {
+        "has_pre_hook": bool(effective_pre and (repo_root / effective_pre).exists()),
+        "has_run": bool(effective_run and (repo_root / effective_run).exists()),
+        "has_post_hook": bool(effective_post and (repo_root / effective_post).exists()),
+        "effective_pre_hook_path": effective_pre,
+        "effective_executor_path": effective_run,
+        "effective_post_hook_path": effective_post,
+    }
 
 
-def try_pattern_route(skill_def: SkillDef, user_msg: str) -> dict | None:
-    """Try named-group regex patterns from skill's router_patterns. Returns groupdict or None."""
-    for pattern in skill_def.router_patterns:
-        m = re.search(pattern, user_msg, re.IGNORECASE | re.DOTALL)
-        if m:
-            return {k: v.strip() for k, v in m.groupdict().items() if v is not None}
+def try_pattern_route(node: WorkflowNode, user_msg: str) -> dict | None:
+    for pattern in node.router_patterns:
+        match = re.search(pattern, user_msg, re.IGNORECASE | re.DOTALL)
+        if match:
+            return {key: value.strip() for key, value in match.groupdict().items() if value is not None}
     return None

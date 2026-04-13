@@ -1,12 +1,11 @@
-"""Skill execution helpers and routing utilities.
+"""Shared node execution helpers and routing utilities.
 
 Public surface used by engine.py and bot.py:
-  - SkillActionResult          — result dataclass
-  - execute_skill_generic      — generic --args-json subprocess call
-  - render_skill_reply_pass2   — Pass 2 LLM synthesis
-  - render_general_reply       — general fallback LLM reply
-  - format_direct_skill_reply  — format stdout as Discord reply
-  - execute_schedule_action    — shared impl for finance-schedule/run.py
+  - SkillActionResult       — generic subprocess result dataclass
+  - execute_skill_generic   — generic --args-json subprocess call
+  - render_general_reply    — fallback LLM reply used by general-reply node
+  - format_direct_skill_reply — format stdout as Discord reply
+  - execute_schedule_action — shared impl for finance-schedule/run.py
 
 Internal routing helpers (used by engine._try_direct_route):
   - _route_finance_report_direct
@@ -20,9 +19,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import GEMINI_TOOL_MODEL, SCHEDULE_DB_PATH, SKILLS_DIR
+from .config import SCHEDULE_DB_PATH, SKILLS_DIR
 from .logging_utils import get_logger
-from .prompts import load_prompt
+from .prompts import load_prompt, load_prompt_path
 from .schedule_db import create_job, delete_job, ensure_db, list_jobs, update_job
 from .scheduler import parse_cron
 
@@ -89,57 +88,12 @@ def format_direct_skill_reply(action_result: SkillActionResult) -> str:
     return output[:3500]
 
 
-def render_skill_reply_pass2(
+def render_general_reply(
     user_msg: str,
-    action_result: SkillActionResult,
     *,
     recent_context: str = "",
+    system_prompt_path: str | None = None,
 ) -> str:
-    """Run Pass 2 synthesis with codex exec over the action result."""
-    logger = get_logger()
-    tool_output = action_result.stdout.strip()
-    if not tool_output:
-        tool_output = action_result.stderr.strip() or "(no output)"
-
-    prompt_template = load_prompt("skill_pass2.md")
-    prompt = prompt_template.format(
-        user_msg=user_msg,
-        tool_name=action_result.tool_name,
-        tool_args=json.dumps(action_result.args, ensure_ascii=False),
-        tool_output=tool_output,
-        recent_context=recent_context.strip() or "(none)",
-    )
-    cmd = [
-        "codex",
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "workspace-write",
-        "-C",
-        str(SKILLS_DIR.parents[0]),
-    ]
-    result = subprocess.run(
-        cmd,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        cwd=SKILLS_DIR.parents[0],
-        check=False,
-    )
-    logger.info(
-        "Pass2 completed tool=%s returncode=%s stdout_len=%s stderr_len=%s",
-        action_result.tool_name,
-        result.returncode,
-        len(result.stdout),
-        len(result.stderr),
-    )
-    if result.returncode != 0:
-        fallback = action_result.stdout.strip() or action_result.stderr.strip() or "技能執行完成，但整理回覆失敗。"
-        return f"技能已執行，但 Pass 2 整理失敗：\n```text\n{fallback[:3500]}\n```"
-    return result.stdout.strip() or "技能已執行完成。"
-
-
-def render_general_reply(user_msg: str, *, recent_context: str = "") -> str:
     """Generate a normal Discord reply when no skill is selected."""
     logger = get_logger()
     prompt_template = load_prompt("general_reply.md")
@@ -147,6 +101,9 @@ def render_general_reply(user_msg: str, *, recent_context: str = "") -> str:
         user_msg=user_msg,
         recent_context=recent_context.strip() or "(none)",
     )
+    system_prompt = load_prompt_path(system_prompt_path).strip() if system_prompt_path else ""
+    if system_prompt:
+        prompt = f"{system_prompt}\n\n{prompt}"
     cmd = [
         "codex",
         "exec",

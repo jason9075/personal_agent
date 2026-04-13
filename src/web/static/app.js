@@ -1,43 +1,27 @@
-/**
- * personal_agent — Workflow Manager (LiteGraph.js edition)
- *
- * Architecture:
- *  - Custom LiteGraph node type "workflow/skill" renders each WorkflowNode
- *  - graph.onConnectionChange diffs link IDs to detect add/remove and syncs DB
- *  - Node selection → side panel skill editor (real-time API save)
- *  - Right-click on a link → edge condition editor in side panel
- */
-
 'use strict';
 
-// ── Pass colours — Nord palette ───────────────────────────────────────────────
-// Frost:  #5E81AC (nord10) #81A1C1 (nord9) #88C0D0 (nord8)
-// Aurora: #A3BE8C (nord14) #D08770 (nord12) #B48EAD (nord15)
 const PASS_PALETTE = {
-  1: { title: '#3B4F6E', body: '#2E3440', badge: '#81A1C1' },  // frost blue
-  2: { title: '#3D5248', body: '#2E3440', badge: '#A3BE8C' },  // aurora green
-  3: { title: '#5A3F35', body: '#2E3440', badge: '#D08770' },  // aurora orange
+  1: { title: '#3B4F6E', body: '#2E3440', badge: '#81A1C1' },
+  2: { title: '#3D5248', body: '#2E3440', badge: '#A3BE8C' },
+  3: { title: '#5A3F35', body: '#2E3440', badge: '#D08770' },
 };
-const PASS_PALETTE_DEFAULT = { title: '#4A3D56', body: '#2E3440', badge: '#B48EAD' }; // aurora purple
+const PASS_PALETTE_DEFAULT = { title: '#4A3D56', body: '#2E3440', badge: '#B48EAD' };
 
-function passColors(idx) { return PASS_PALETTE[idx] || PASS_PALETTE_DEFAULT; }
+function passColors(idx) {
+  return PASS_PALETTE[idx] || PASS_PALETTE_DEFAULT;
+}
 
-// ── App state ─────────────────────────────────────────────────────────────────
 const S = {
-  graph:        null,   // LGraph
-  canvas:       null,   // LGraphCanvas
-  graphData:    null,   // {nodes, edges, skills}
-  allSkills:    [],
-  // LiteGraph link_id → {dbId, from_node_id, to_node_id, condition_type, condition_value}
-  linkEdgeMap:  {},
-  // LiteGraph node.id → WorkflowNode DB id string (e.g. "p1:echo")
-  lnodeToDbId:  {},
-  // track previous link set for diff
+  graph: null,
+  canvas: null,
+  graphData: null,
+  linkEdgeMap: {},
+  lnodeToDbId: {},
   _prevLinkIds: new Set(),
-  addEdgeMode:  false,
+  addEdgeMode: false,
+  isHydrating: false,
 };
 
-// ── API helpers ───────────────────────────────────────────────────────────────
 async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body !== undefined) opts.body = JSON.stringify(body);
@@ -45,281 +29,284 @@ async function api(method, path, body) {
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
 }
-const GET  = p      => api('GET',    p);
-const PUT  = (p, b) => api('PUT',    p, b);
-const POST = (p, b) => api('POST',   p, b);
-const DEL  = p      => api('DELETE', p);
+const GET = path => api('GET', path);
+const PUT = (path, body) => api('PUT', path, body);
+const POST = (path, body) => api('POST', path, body);
+const DEL = path => api('DELETE', path);
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
-let _toastTimer = null;
+let toastTimer = null;
 function toast(msg, kind = 'ok') {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.className = `show ${kind}`;
-  clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => { el.className = ''; }, 2400);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.className = '';
+  }, 2400);
 }
 
-// ── Register custom LiteGraph node type ──────────────────────────────────────
-function registerSkillNodeType() {
-  function SkillNode() {
-    this.addInput('in',  'workflow');
+function registerNodeType() {
+  function WorkflowNodeView() {
+    this.addInput('in', 'workflow');
     this.addOutput('out', 'workflow');
-    this.size       = [220, 74];
-    this.properties = { node_id: '', skill_id: '', pass_index: 1, enabled: true };
-    this.resizable  = false;
+    this.size = [250, 90];
+    this.properties = {
+      node_id: '',
+      name: '',
+      node_type: 'agent',
+      pass_index: 1,
+      enabled: true,
+      start_node: false,
+      send_response: false,
+      hooks: {},
+    };
+    this.resizable = false;
   }
 
-  SkillNode.title = 'Skill';
+  WorkflowNodeView.title = 'Node';
 
-  SkillNode.prototype.onDrawForeground = function(ctx) {
+  WorkflowNodeView.prototype._applyColors = function _applyColors() {
+    const pal = passColors(this.properties.pass_index);
+    this.color = this.properties.enabled ? pal.title : '#2a2a2a';
+    this.bgcolor = this.properties.enabled ? pal.body : '#1a1a1a';
+  };
+
+  WorkflowNodeView.prototype.onConfigure = function onConfigure() {
+    this._applyColors();
+  };
+
+  WorkflowNodeView.prototype.onDrawForeground = function onDrawForeground(ctx) {
     if (this.flags && this.flags.collapsed) return;
-    const pal  = passColors(this.properties.pass_index);
-    const TH   = LiteGraph.NODE_TITLE_HEIGHT || 30;
-    const W    = this.size[0];
 
-    // Pass badge strip (top of body)
-    ctx.fillStyle = pal.body + 'cc';
-    ctx.fillRect(0, TH, W, this.size[1]);
+    const titleHeight = LiteGraph.NODE_TITLE_HEIGHT || 30;
+    const width = this.size[0];
+    const badgeY = titleHeight + 6;
+    let badgeX = 8;
 
-    ctx.fillStyle = pal.badge;
-    ctx.beginPath();
-    ctx.roundRect(6, TH + 6, 54, 16, 3);
-    ctx.fill();
+    function drawBadge(text, color) {
+      const w = 12 + (text.length * 7);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.roundRect(badgeX, badgeY, w, 16, 3);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText(text, badgeX + 6, badgeY + 11);
+      badgeX += w + 6;
+    }
 
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 10px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`Pass ${this.properties.pass_index}`, 10, TH + 17);
+    drawBadge(`P${this.properties.pass_index}`, passColors(this.properties.pass_index).badge);
+    drawBadge(this.properties.node_type.toUpperCase(), '#5E81AC');
+    if (this.properties.start_node) drawBadge('START', '#BF616A');
+    if (this.properties.send_response) drawBadge('RESP', '#A3BE8C');
 
-    // Skill ID
+    const hooks = this.properties.hooks || {};
+    const lifecycle = [
+      hooks.has_pre_hook ? 'PRE' : null,
+      hooks.has_run ? 'RUN' : null,
+      hooks.has_post_hook ? 'POST' : null,
+    ].filter(Boolean).join(' · ');
+
     ctx.fillStyle = this.properties.enabled ? '#aab0cc' : '#666';
     ctx.font = '11px monospace';
-    ctx.fillText(this.properties.skill_id, 6, TH + 40);
+    ctx.fillText(this.properties.node_id, 8, titleHeight + 40);
+
+    ctx.fillStyle = '#d8dee9';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(lifecycle || 'no lifecycle files', 8, titleHeight + 60);
 
     if (!this.properties.enabled) {
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
-      ctx.fillRect(0, TH, W, this.size[1]);
+      ctx.fillRect(0, titleHeight, width, this.size[1]);
       ctx.fillStyle = '#d95c5c';
       ctx.font = 'bold 9px sans-serif';
       ctx.textAlign = 'right';
-      ctx.fillText('DISABLED', W - 6, TH + this.size[1] - 6);
+      ctx.fillText('DISABLED', width - 6, titleHeight + this.size[1] - 6);
       ctx.textAlign = 'left';
     }
   };
 
-  // Apply pass colours on title when node is created/updated
-  SkillNode.prototype._applyColors = function() {
-    const pal = passColors(this.properties.pass_index);
-    this.color   = this.properties.enabled ? pal.title : '#2a2a2a';
-    this.bgcolor = this.properties.enabled ? pal.body   : '#1a1a1a';
-  };
-
-  SkillNode.prototype.onConfigure = function() {
-    this._applyColors();
-  };
-
-  LiteGraph.registerNodeType('workflow/skill', SkillNode);
+  LiteGraph.registerNodeType('workflow/node', WorkflowNodeView);
 }
 
-// ── LiteGraph initialisation ─────────────────────────────────────────────────
 function initLiteGraph() {
-  registerSkillNodeType();
-
-  S.graph  = new LGraph();
-  const canvasEl = document.getElementById('lg-canvas');
-  S.canvas = new LGraphCanvas(canvasEl, S.graph);
-
-  // Dark background
+  registerNodeType();
+  S.graph = new LGraph();
+  S.canvas = new LGraphCanvas(document.getElementById('lg-canvas'), S.graph);
   S.canvas.background_color = '#0d1018';
   S.canvas.render_canvas_border = false;
   S.canvas.render_connections_shadows = false;
   S.canvas.show_info = false;
-  S.canvas.node_panel = null;
 
-  // Node selection
-  S.canvas.onNodeSelected = (lnode) => {
-    if (!lnode) return;
-    showEditorTab();
-    renderNodeEditor(lnode);
+  S.canvas.onNodeSelected = lnode => {
+    if (lnode) renderNodeEditor(lnode);
   };
-  S.canvas.onNodeDeselected = () => {
-    if (!S.canvas.selected_nodes || !Object.keys(S.canvas.selected_nodes).length) {
-      showHint();
-    }
-  };
-
-  // Right-click on a link → edge editor
-  S.canvas.onShowLinkMenu = (link /*, e*/) => {
+  S.canvas.onNodeDeselected = () => showHint();
+  S.canvas.onShowLinkMenu = link => {
     const edgeData = S.linkEdgeMap[link.id];
-    if (edgeData) {
-      showEditorTab();
-      renderEdgeEditor(link.id, edgeData);
-    }
-    return false; // suppress default menu
+    if (edgeData) renderEdgeEditor(link.id, edgeData);
+    return false;
   };
-
-  // Connection changes (add / remove)
   S.graph.onConnectionChange = onConnectionChange;
 
-  // Resize canvas to fill its container
   fitCanvas();
   window.addEventListener('resize', fitCanvas);
 }
 
 function fitCanvas() {
   const wrap = document.getElementById('canvas-wrap');
-  const el   = document.getElementById('lg-canvas');
-  el.width   = wrap.clientWidth;
-  el.height  = wrap.clientHeight;
+  const el = document.getElementById('lg-canvas');
+  el.width = wrap.clientWidth;
+  el.height = wrap.clientHeight;
   if (S.canvas) S.canvas.resize(el.width, el.height);
 }
 
-// ── Load graph from API ───────────────────────────────────────────────────────
 async function loadGraph() {
-  const [gd, skills] = await Promise.all([GET('/api/workflow'), GET('/api/skills')]);
-  S.graphData = gd;
-  S.allSkills = skills;
+  S.isHydrating = true;
+  try {
+    const data = await GET('/api/workflow');
+    S.graphData = data;
+    S.graph.clear();
+    S.linkEdgeMap = {};
+    S.lnodeToDbId = {};
+    S._prevLinkIds = new Set();
 
-  S.graph.clear();
-  S.linkEdgeMap  = {};
-  S.lnodeToDbId  = {};
-  S._prevLinkIds = new Set();
+    const nodeMap = {};
+    const colWidth = 320;
+    const rowHeight = 150;
+    const margin = 60;
+    const sortedNodes = layoutSortedNodes(data.nodes);
+    const rowIndexByPass = new Map();
 
-  // Group nodes by pass so we can space them vertically
-  const byPass = {};
-  for (const n of gd.nodes) {
-    (byPass[n.pass_index] = byPass[n.pass_index] || []).push(n);
-  }
+    sortedNodes.forEach(node => {
+      const lnode = LiteGraph.createNode('workflow/node');
+      lnode.title = node.name || node.id;
+      lnode.properties = {
+        node_id: node.id,
+        name: node.name,
+        node_type: node.node_type,
+        pass_index: node.pass_index,
+        enabled: node.enabled,
+        start_node: node.start_node,
+        send_response: node.send_response,
+        hooks: node.hooks || {},
+      };
+      lnode._applyColors();
 
-  const nodeMap = {};   // DB node id → LiteGraph node
-  const COL_W   = 280;
-  const ROW_H   = 120;
-  const MARGIN  = 60;
+      const passColumn = Math.max(0, (node.pass_index || 1) - 1);
+      const rowIndex = rowIndexByPass.get(node.pass_index) || 0;
+      lnode.pos = [margin + (passColumn * colWidth), margin + (rowIndex * rowHeight)];
+      rowIndexByPass.set(node.pass_index, rowIndex + 1);
+      S.graph.add(lnode);
+      nodeMap[node.id] = lnode;
+      S.lnodeToDbId[lnode.id] = node.id;
+    });
 
-  for (const n of gd.nodes) {
-    const lnode = LiteGraph.createNode('workflow/skill');
-    const skill = gd.skills[n.skill_id] || {};
-    lnode.title = skill.display_name || n.skill_id;
-    lnode.properties = {
-      node_id:    n.id,
-      skill_id:   n.skill_id,
-      pass_index: n.pass_index,
-      enabled:    n.enabled,
-    };
-    lnode._applyColors();
-
-    // Position: x by pass, y by index within pass
-    const siblings = byPass[n.pass_index];
-    const yIdx     = siblings.indexOf(n);
-    lnode.pos = [
-      MARGIN + (n.pass_index - 1) * COL_W,
-      MARGIN + yIdx * ROW_H,
-    ];
-
-    S.graph.add(lnode);
-    nodeMap[n.id]          = lnode;
-    S.lnodeToDbId[lnode.id] = n.id;
-  }
-
-  // Add edges (LiteGraph links)
-  for (const e of gd.edges) {
-    const from = nodeMap[e.from_node_id];
-    const to   = nodeMap[e.to_node_id];
-    if (from && to) {
+    data.edges.forEach(edge => {
+      const from = nodeMap[edge.from_node_id];
+      const to = nodeMap[edge.to_node_id];
+      if (!from || !to) return;
       const link = from.connect(0, to, 0);
-      if (link) {
-        S.linkEdgeMap[link.id] = {
-          dbId:           e.id,
-          from_node_id:   e.from_node_id,
-          to_node_id:     e.to_node_id,
-          condition_type:  e.condition_type,
-          condition_value: e.condition_value,
-        };
-        S._prevLinkIds.add(link.id);
-      }
-    }
-  }
+      if (!link) return;
+      S.linkEdgeMap[link.id] = {
+        dbId: edge.id,
+        from_node_id: edge.from_node_id,
+        to_node_id: edge.to_node_id,
+        condition_type: edge.condition_type,
+        condition_value: edge.condition_value,
+      };
+      S._prevLinkIds.add(link.id);
+    });
 
-  updateBadge();
-  renderSkillsTab();
+    updateBadge();
+    showHint();
+  } finally {
+    S.isHydrating = false;
+  }
+}
+
+function layoutSortedNodes(nodes) {
+  return [...nodes].sort((a, b) => {
+    if (!!a.start_node !== !!b.start_node) {
+      return a.start_node ? -1 : 1;
+    }
+    if ((a.pass_index || 0) !== (b.pass_index || 0)) {
+      return (a.pass_index || 0) - (b.pass_index || 0);
+    }
+    if ((a.node_type || '') !== (b.node_type || '')) {
+      if (a.node_type === 'router') return -1;
+      if (b.node_type === 'router') return 1;
+    }
+    return (a.id || '').localeCompare(b.id || '');
+  });
 }
 
 function updateBadge() {
-  const maxPass = S.graphData.nodes.reduce((m, n) => Math.max(m, n.pass_index), 0);
+  const maxPass = S.graphData.nodes.reduce((acc, node) => Math.max(acc, node.pass_index), 0);
   document.getElementById('graph-badge').textContent =
     `${S.graphData.nodes.length} nodes · ${S.graphData.edges.length} edges · ${maxPass} passes`;
 }
 
-// ── Connection change handler ─────────────────────────────────────────────────
-function onConnectionChange(/*changedNode*/) {
+function onConnectionChange() {
+  if (S.isHydrating) return;
   const links = S.graph.links || {};
-  const currentIds = new Set(Object.values(links).map(l => l.id));
+  const currentIds = new Set(Object.values(links).map(link => link.id));
 
-  // Added links
-  for (const id of currentIds) {
+  currentIds.forEach(id => {
     if (!S._prevLinkIds.has(id)) handleLinkAdded(links[id]);
-  }
-  // Removed links
-  for (const id of S._prevLinkIds) {
+  });
+  S._prevLinkIds.forEach(id => {
     if (!currentIds.has(id)) handleLinkRemoved(id);
-  }
-
+  });
   S._prevLinkIds = currentIds;
 }
 
 async function handleLinkAdded(link) {
-  // Skip links that were pre-loaded from DB (already in linkEdgeMap)
   if (!link || S.linkEdgeMap[link.id]) return;
-
-  const fromLNode = S.graph.getNodeById(link.origin_id);
-  const toLNode   = S.graph.getNodeById(link.target_id);
-  if (!fromLNode || !toLNode) return;
-
-  const fromDbId = fromLNode.properties.node_id;
-  const toDbId   = toLNode.properties.node_id;
-  if (!fromDbId || !toDbId) return;
+  const fromNode = S.graph.getNodeById(link.origin_id);
+  const toNode = S.graph.getNodeById(link.target_id);
+  if (!fromNode || !toNode) return;
 
   try {
     const result = await POST('/api/workflow/edges', {
-      from_node_id:    fromDbId,
-      to_node_id:      toDbId,
-      condition_type:  'always',
+      from_node_id: fromNode.properties.node_id,
+      to_node_id: toNode.properties.node_id,
+      condition_type: 'always',
       condition_value: '',
     });
     S.linkEdgeMap[link.id] = {
-      dbId: result.id, from_node_id: fromDbId, to_node_id: toDbId,
-      condition_type: 'always', condition_value: '',
+      dbId: result.id,
+      from_node_id: fromNode.properties.node_id,
+      to_node_id: toNode.properties.node_id,
+      condition_type: 'always',
+      condition_value: '',
     };
-    toast('Edge added');
-    // Refresh edge count in badge
-    S.graphData.edges.push({ id: result.id, from_node_id: fromDbId, to_node_id: toDbId, condition_type: 'always', condition_value: '' });
+    S.graphData.edges.push({
+      id: result.id,
+      from_node_id: fromNode.properties.node_id,
+      to_node_id: toNode.properties.node_id,
+      condition_type: 'always',
+      condition_value: '',
+    });
     updateBadge();
-  } catch (e) {
-    toast(e.message, 'err');
+    toast('Edge added');
+  } catch (err) {
+    toast(err.message, 'err');
   }
 }
 
 async function handleLinkRemoved(linkId) {
-  const ed = S.linkEdgeMap[linkId];
-  if (!ed) return;
+  const edgeData = S.linkEdgeMap[linkId];
+  if (!edgeData) return;
   try {
-    await DEL(`/api/workflow/edges/${ed.dbId}`);
+    await DEL(`/api/workflow/edges/${edgeData.dbId}`);
     delete S.linkEdgeMap[linkId];
-    S.graphData.edges = S.graphData.edges.filter(e => e.id !== ed.dbId);
+    S.graphData.edges = S.graphData.edges.filter(edge => edge.id !== edgeData.dbId);
     updateBadge();
     toast('Edge removed');
-  } catch (e) {
-    toast(e.message, 'err');
+  } catch (err) {
+    toast(err.message, 'err');
   }
-}
-
-// ── Panel helpers ─────────────────────────────────────────────────────────────
-function showEditorTab() {
-  document.querySelectorAll('.tab-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.tab === 'editor'));
-  document.getElementById('tab-editor').classList.remove('hidden');
-  document.getElementById('tab-skills').classList.add('hidden');
 }
 
 function showHint() {
@@ -340,133 +327,233 @@ function showEdgeEditor() {
   document.getElementById('edge-editor').classList.remove('hidden');
 }
 
-// ── Node editor ───────────────────────────────────────────────────────────────
 function renderNodeEditor(lnode) {
   showNodeEditor();
-  const { node_id, skill_id, pass_index, enabled } = lnode.properties;
+  const node = S.graphData.nodes.find(item => item.id === lnode.properties.node_id);
+  if (!node) return;
 
-  document.getElementById('ne-node-id').textContent = node_id || '(unsaved)';
-  document.getElementById('ne-pass').textContent    = `Pass ${pass_index}`;
-  document.getElementById('ne-skill-id').textContent = skill_id;
-  document.getElementById('ne-enabled').checked     = enabled;
+  const hooks = node.hooks || {};
+  setValue('ne-node-id', node.id, true);
+  setValue('ne-name', node.name || '');
+  setValue('ne-description', node.description || '');
+  setValue('ne-node-type', node.node_type || 'agent');
+  setValue('ne-pass-index', String(node.pass_index || 1));
+  document.getElementById('ne-enabled').checked = !!node.enabled;
+  document.getElementById('ne-start-node').checked = !!node.start_node;
+  document.getElementById('ne-send-response').checked = !!node.send_response;
+  document.getElementById('ne-use-prev-output').checked = !!node.use_prev_output;
+  setValue('ne-executor-path', node.executor_path || '');
+  setValue('ne-pre-hook-path', node.pre_hook_path || '');
+  setValue('ne-post-hook-path', node.post_hook_path || '');
+  setValue('ne-system-prompt-path', node.system_prompt_path || '');
+  setValue('ne-prompt-template-path', node.prompt_template_path || '');
+  setValue('ne-timeout-seconds', String(node.timeout_seconds || 600));
+  setValue('ne-max-llm-calls', String(node.max_llm_calls || 0));
+  setValue('ne-hook-pre', hooks.effective_pre_hook_path || '(none)', true);
+  setValue('ne-hook-run', hooks.effective_executor_path || '(none)', true);
+  setValue('ne-hook-post', hooks.effective_post_hook_path || '(none)', true);
+  setValue('ne-route-label', node.route_label || '');
+  setValue('ne-route-description', node.route_description || '');
+  setValue('ne-router-mode', node.router_mode || 'llm');
+  setValue('ne-router-patterns', (node.router_patterns || []).join('\n'));
+  setValue('ne-allowed-tools', (node.allowed_tools || []).join('\n'));
+  setValue('ne-input-schema', stringifyJson(node.input_schema));
+  setValue('ne-output-schema', stringifyJson(node.output_schema));
+  setValue('ne-metadata', stringifyJson(node.metadata || {}));
+  syncRouterPatternVisibility();
 
-  const skill = S.allSkills.find(s => s.id === skill_id) || null;
-  if (skill) populateSkillForm(skill);
+  document.getElementById('ne-router-mode').onchange = syncRouterPatternVisibility;
 
-  // Save node
   document.getElementById('ne-save').onclick = async () => {
-    const nowEnabled = document.getElementById('ne-enabled').checked;
     try {
-      await PUT(`/api/workflow/nodes/${node_id}`, {
-        pass_index,
-        skill_id,
-        enabled: nowEnabled,
-      });
-      lnode.properties.enabled = nowEnabled;
-      lnode._applyColors();
-      S.canvas.setDirty(true, true);
+      await PUT(`/api/nodes/${node.id}`, collectNodeForm(node.id));
+      await loadGraph();
+      const refreshed = findLiteNodeByDbId(node.id);
+      if (refreshed) renderNodeEditor(refreshed);
       toast('Node saved');
-    } catch (e) { toast(e.message, 'err'); }
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   };
 
-  // Delete node
+  document.getElementById('ne-details').onclick = async () => {
+    await renderNodeDetails(collectNodeForm(node.id), node.hooks || {});
+  };
+
   document.getElementById('ne-delete').onclick = async () => {
-    if (!confirm(`Delete node "${node_id}"? Its connections will also be removed.`)) return;
+    if (!confirm(`Delete node "${node.id}"? Its connections will also be removed.`)) return;
     try {
-      await DEL(`/api/workflow/nodes/${node_id}`);
-      S.graph.remove(lnode);
-      showHint();
+      await DEL(`/api/nodes/${node.id}`);
+      await loadGraph();
       toast('Node deleted');
-      await refreshGraphData();
-    } catch (e) { toast(e.message, 'err'); }
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   };
-
-  // Save skill
-  document.getElementById('se-save').onclick = () => saveSkillForm(skill_id);
 }
 
-function populateSkillForm(skill) {
-  document.getElementById('se-id-label').textContent     = skill.id;
-  document.getElementById('se-display-name').value       = skill.display_name || '';
-  document.getElementById('se-description').value        = skill.description  || '';
-  document.getElementById('se-router-mode').value        = skill.router_mode  || 'llm';
-  document.getElementById('se-patterns').value           = (skill.router_patterns || []).join('\n');
-  document.getElementById('se-pass2-mode').value         = skill.pass2_mode   || 'never';
-  document.getElementById('se-script-path').value        = skill.script_path  || '';
-  document.getElementById('se-system-prompt').value      = skill.system_prompt || '';
+async function renderNodeDetails(node, hooks = {}) {
+  const [systemPromptPreview, promptTemplatePreview] = await Promise.all([
+    previewPrompt(node.system_prompt_path),
+    previewPrompt(node.prompt_template_path),
+  ]);
 
-  syncPatternsVisibility();
-  document.getElementById('se-router-mode').onchange = syncPatternsVisibility;
+  setText('dm-node-id', node.id || '(unsaved)');
+  setText('dm-name', node.name || '(empty)');
+  setText('dm-node-type', node.node_type || '(empty)');
+  setText('dm-pass-index', `Pass ${node.pass_index ?? '-'}`);
+  setText('dm-flags', formatFlags(node));
+
+  setText('dm-pre-hook', hooks.effective_pre_hook_path || node.pre_hook_path || '(none)');
+  setText('dm-executor', hooks.effective_executor_path || node.executor_path || '(none)');
+  setText('dm-post-hook', hooks.effective_post_hook_path || node.post_hook_path || '(none)');
+  setText('dm-timeout', `${node.timeout_seconds ?? 0}s`);
+  setText('dm-max-llm', String(node.max_llm_calls ?? 0));
+
+  setPre('dm-route-label', node.route_label || '(empty)');
+  setPre('dm-route-description', node.route_description || '(empty)');
+  setPre('dm-router-patterns', (node.router_patterns || []).length ? node.router_patterns.join('\n') : '(none)');
+  setPre('dm-system-prompt-path', node.system_prompt_path || '(none)');
+  setPre('dm-system-prompt', systemPromptPreview || '(empty)');
+  setPre('dm-prompt-template-path', node.prompt_template_path || '(none)');
+  setPre('dm-prompt-template', promptTemplatePreview || '(empty)');
+  setPre('dm-input-schema', stringifyJson(node.input_schema) || '(empty)');
+  setPre('dm-output-schema', stringifyJson(node.output_schema) || '(empty)');
+  setPre('dm-allowed-tools', (node.allowed_tools || []).length ? node.allowed_tools.join('\n') : '(none)');
+  setPre('dm-metadata', stringifyJson(node.metadata || {}) || '{}');
+
+  document.getElementById('details-modal').classList.remove('hidden');
 }
 
-function syncPatternsVisibility() {
-  const show = document.getElementById('se-router-mode').value === 'direct_regex';
-  document.getElementById('se-patterns-wrap').style.display = show ? '' : 'none';
+async function previewPrompt(path) {
+  if (!path) return '';
+  const result = await POST('/api/prompt-preview', { path });
+  return result.content || '';
 }
 
-async function saveSkillForm(skillId) {
-  const patterns = document.getElementById('se-patterns').value
-    .split('\n').map(l => l.trim()).filter(Boolean);
-  try {
-    await PUT(`/api/skills/${skillId}`, {
-      display_name:    document.getElementById('se-display-name').value.trim(),
-      description:     document.getElementById('se-description').value.trim(),
-      router_mode:     document.getElementById('se-router-mode').value,
-      router_patterns: patterns,
-      pass2_mode:      document.getElementById('se-pass2-mode').value,
-      script_path:     document.getElementById('se-script-path').value.trim(),
-      system_prompt:   document.getElementById('se-system-prompt').value.trim(),
-    });
-    toast('Skill saved');
-    await refreshGraphData();
-    // Update node title in canvas if display_name changed
-    S.canvas.setDirty(true, true);
-  } catch (e) { toast(e.message, 'err'); }
-}
-
-// ── Edge editor ───────────────────────────────────────────────────────────────
 function renderEdgeEditor(linkId, edgeData) {
   showEdgeEditor();
-  document.getElementById('ee-from').textContent = edgeData.from_node_id;
-  document.getElementById('ee-to').textContent   = edgeData.to_node_id;
-  document.getElementById('ee-cond-type').value  = edgeData.condition_type;
-  document.getElementById('ee-cond-value').value = edgeData.condition_value;
-
+  setValue('ee-from', edgeData.from_node_id, true);
+  setValue('ee-to', edgeData.to_node_id, true);
+  setValue('ee-cond-type', edgeData.condition_type || 'always');
+  setValue('ee-cond-value', edgeData.condition_value || '');
   syncEdgeValueVisibility();
   document.getElementById('ee-cond-type').onchange = syncEdgeValueVisibility;
 
   document.getElementById('ee-save').onclick = async () => {
-    const condType  = document.getElementById('ee-cond-type').value;
-    const condValue = document.getElementById('ee-cond-value').value.trim();
     try {
-      // Replace: delete old + create new
       await DEL(`/api/workflow/edges/${edgeData.dbId}`);
-      const result = await POST('/api/workflow/edges', {
-        from_node_id:    edgeData.from_node_id,
-        to_node_id:      edgeData.to_node_id,
-        condition_type:  condType,
-        condition_value: condValue,
+      await POST('/api/workflow/edges', {
+        from_node_id: edgeData.from_node_id,
+        to_node_id: edgeData.to_node_id,
+        condition_type: document.getElementById('ee-cond-type').value,
+        condition_value: document.getElementById('ee-cond-value').value.trim(),
       });
-      // Update local map
-      S.linkEdgeMap[linkId] = { ...edgeData, dbId: result.id, condition_type: condType, condition_value: condValue };
+      await loadGraph();
       toast('Edge saved');
-      await refreshGraphData();
       showHint();
-    } catch (e) { toast(e.message, 'err'); }
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   };
 
   document.getElementById('ee-delete').onclick = async () => {
     try {
       await DEL(`/api/workflow/edges/${edgeData.dbId}`);
-      // Remove the LiteGraph link
       S.graph.removeLink(linkId);
-      delete S.linkEdgeMap[linkId];
-      S._prevLinkIds.delete(linkId);
+      await loadGraph();
       toast('Edge deleted');
-      await refreshGraphData();
       showHint();
-    } catch (e) { toast(e.message, 'err'); }
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   };
+}
+
+function collectNodeForm(nodeId) {
+  return {
+    id: nodeId,
+    name: document.getElementById('ne-name').value.trim(),
+    description: document.getElementById('ne-description').value.trim(),
+    node_type: document.getElementById('ne-node-type').value,
+    pass_index: parseInt(document.getElementById('ne-pass-index').value, 10),
+    enabled: document.getElementById('ne-enabled').checked,
+    start_node: document.getElementById('ne-start-node').checked,
+    send_response: document.getElementById('ne-send-response').checked,
+    use_prev_output: document.getElementById('ne-use-prev-output').checked,
+    executor_path: document.getElementById('ne-executor-path').value.trim(),
+    pre_hook_path: blankToNull(document.getElementById('ne-pre-hook-path').value),
+    post_hook_path: blankToNull(document.getElementById('ne-post-hook-path').value),
+    system_prompt_path: blankToNull(document.getElementById('ne-system-prompt-path').value),
+    prompt_template_path: blankToNull(document.getElementById('ne-prompt-template-path').value),
+    timeout_seconds: parseInt(document.getElementById('ne-timeout-seconds').value, 10),
+    max_llm_calls: parseInt(document.getElementById('ne-max-llm-calls').value, 10),
+    route_label: blankToNull(document.getElementById('ne-route-label').value),
+    route_description: blankToNull(document.getElementById('ne-route-description').value),
+    router_mode: document.getElementById('ne-router-mode').value,
+    router_patterns: splitLines(document.getElementById('ne-router-patterns').value),
+    allowed_tools: splitLines(document.getElementById('ne-allowed-tools').value),
+    input_schema: parseJsonOrNull(document.getElementById('ne-input-schema').value),
+    output_schema: parseJsonOrNull(document.getElementById('ne-output-schema').value),
+    metadata: parseJsonOrObject(document.getElementById('ne-metadata').value),
+  };
+}
+
+function stringifyJson(value) {
+  if (!value || (typeof value === 'object' && Object.keys(value).length === 0)) return '';
+  return JSON.stringify(value, null, 2);
+}
+
+function parseJsonOrNull(value) {
+  const text = value.trim();
+  if (!text) return null;
+  return JSON.parse(text);
+}
+
+function parseJsonOrObject(value) {
+  const text = value.trim();
+  if (!text) return {};
+  return JSON.parse(text);
+}
+
+function splitLines(value) {
+  return value.split('\n').map(line => line.trim()).filter(Boolean);
+}
+
+function blankToNull(value) {
+  const text = value.trim();
+  return text || null;
+}
+
+function setValue(id, value, useText = false) {
+  const el = document.getElementById(id);
+  if (useText) {
+    el.textContent = value;
+  } else {
+    el.value = value;
+  }
+}
+
+function setText(id, value) {
+  document.getElementById(id).textContent = value;
+}
+
+function setPre(id, value) {
+  document.getElementById(id).textContent = value;
+}
+
+function formatFlags(node) {
+  const flags = [];
+  if (node.enabled) flags.push('enabled');
+  if (node.start_node) flags.push('start_node');
+  if (node.send_response) flags.push('send_response');
+  if (node.use_prev_output) flags.push('use_prev_output');
+  return flags.length ? flags.join(' | ') : '(none)';
+}
+
+function syncRouterPatternVisibility() {
+  const show = document.getElementById('ne-router-mode').value === 'direct_regex';
+  document.getElementById('ne-patterns-wrap').style.display = show ? '' : 'none';
 }
 
 function syncEdgeValueVisibility() {
@@ -474,116 +561,63 @@ function syncEdgeValueVisibility() {
   document.getElementById('ee-value-wrap').style.display = show ? '' : 'none';
 }
 
-// ── Skills tab ────────────────────────────────────────────────────────────────
-function renderSkillsTab() {
-  const list = document.getElementById('skills-list');
-  list.innerHTML = '';
-  S.allSkills.forEach(skill => {
-    const card = document.createElement('div');
-    card.className = `skill-card${skill.enabled ? '' : ' disabled'}`;
-    card.innerHTML = `
-      <div class="skill-card-name">${skill.display_name}
-        <code style="font-size:10px;margin-left:4px">${skill.id}</code>
-      </div>
-      <div class="skill-card-meta">${skill.router_mode} · pass2=${skill.pass2_mode}</div>
-    `;
-    card.onclick = () => {
-      showEditorTab();
-      showNodeEditor();
-      document.getElementById('ne-node-id').textContent  = '(select a node)';
-      document.getElementById('ne-pass').textContent     = '—';
-      document.getElementById('ne-skill-id').textContent = skill.id;
-      document.getElementById('ne-enabled').checked      = skill.enabled;
-      document.getElementById('ne-save').style.display   = 'none';
-      document.getElementById('ne-delete').style.display = 'none';
-      populateSkillForm(skill);
-      document.getElementById('se-save').onclick = () => saveSkillForm(skill.id);
-    };
-    list.appendChild(card);
-  });
+function findLiteNodeByDbId(nodeId) {
+  return S.graph._nodes.find(node => node.properties.node_id === nodeId) || null;
 }
 
-// ── Refresh graph data (after mutations) ──────────────────────────────────────
-async function refreshGraphData() {
-  const [gd, skills] = await Promise.all([GET('/api/workflow'), GET('/api/skills')]);
-  S.graphData = gd;
-  S.allSkills = skills;
-  updateBadge();
-  renderSkillsTab();
-
-  // Update node titles in canvas without full reload
-  for (const [lid, dbId] of Object.entries(S.lnodeToDbId)) {
-    const lnode = S.graph.getNodeById(Number(lid));
-    if (!lnode) continue;
-    const dbNode = gd.nodes.find(n => n.id === dbId);
-    if (!dbNode) continue;
-    const skill = gd.skills[dbNode.skill_id];
-    if (skill) {
-      lnode.title = skill.display_name || dbNode.skill_id;
-      lnode.properties.enabled = dbNode.enabled;
-      lnode._applyColors();
-    }
-  }
-  S.canvas.setDirty(true, true);
-}
-
-// ── Add-node modal ────────────────────────────────────────────────────────────
 function openModal() {
-  const sel = document.getElementById('modal-skill');
-  sel.innerHTML = S.allSkills.map(s =>
-    `<option value="${s.id}">${s.display_name} (${s.id})</option>`
-  ).join('');
-  autoNodeId();
+  document.getElementById('modal-node-id').value = '';
+  document.getElementById('modal-name').value = '';
+  document.getElementById('modal-node-type').value = 'agent';
+  document.getElementById('modal-pass').value = '2';
   document.getElementById('modal').classList.remove('hidden');
 }
 
-function autoNodeId() {
-  const pass    = document.getElementById('modal-pass').value;
-  const skillId = document.getElementById('modal-skill').value;
-  document.getElementById('modal-node-id').value = `p${pass}:${skillId}`;
-}
-
-document.getElementById('modal-pass').addEventListener('input',  autoNodeId);
-document.getElementById('modal-skill').addEventListener('change', autoNodeId);
-
 document.getElementById('modal-confirm').addEventListener('click', async () => {
-  const skillId = document.getElementById('modal-skill').value;
-  const pass    = parseInt(document.getElementById('modal-pass').value, 10);
-  const nodeId  = document.getElementById('modal-node-id').value.trim();
-  if (!nodeId || !skillId || isNaN(pass)) { toast('Fill in all fields', 'err'); return; }
+  const nodeId = document.getElementById('modal-node-id').value.trim();
+  if (!nodeId) {
+    toast('Node ID is required', 'err');
+    return;
+  }
 
   try {
-    await PUT(`/api/workflow/nodes/${nodeId}`, { pass_index: pass, skill_id: skillId, enabled: true });
+    await PUT(`/api/nodes/${nodeId}`, {
+      name: document.getElementById('modal-name').value.trim() || nodeId,
+      description: '',
+      node_type: document.getElementById('modal-node-type').value,
+      pass_index: parseInt(document.getElementById('modal-pass').value, 10),
+      enabled: true,
+      start_node: false,
+      send_response: true,
+      use_prev_output: true,
+      executor_path: '',
+      pre_hook_path: null,
+      post_hook_path: null,
+      system_prompt_path: null,
+      prompt_template_path: null,
+      timeout_seconds: 600,
+      max_llm_calls: 0,
+      route_label: nodeId,
+      route_description: '',
+      router_mode: 'llm',
+      router_patterns: [],
+      allowed_tools: [],
+      input_schema: null,
+      output_schema: null,
+      metadata: {},
+    });
     document.getElementById('modal').classList.add('hidden');
+    await loadGraph();
     toast('Node added');
-    // Add to LiteGraph without full reload
-    const skill  = S.allSkills.find(s => s.id === skillId) || {};
-    const lnode  = LiteGraph.createNode('workflow/skill');
-    lnode.title  = skill.display_name || skillId;
-    lnode.properties = { node_id: nodeId, skill_id: skillId, pass_index: pass, enabled: true };
-    lnode._applyColors();
-    lnode.pos = [60 + (pass - 1) * 280, 60 + S.graph.nodes.length * 30];
-    S.graph.add(lnode);
-    S.lnodeToDbId[lnode.id] = nodeId;
-    await refreshGraphData();
-  } catch (e) { toast(e.message, 'err'); }
+  } catch (err) {
+    toast(err.message, 'err');
+  }
 });
 
 document.getElementById('modal-cancel').addEventListener('click', () => {
   document.getElementById('modal').classList.add('hidden');
 });
 
-// ── Tab switching ─────────────────────────────────────────────────────────────
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('tab-editor').classList.toggle('hidden', btn.dataset.tab !== 'editor');
-    document.getElementById('tab-skills').classList.toggle('hidden', btn.dataset.tab !== 'skills');
-  });
-});
-
-// ── Toolbar ───────────────────────────────────────────────────────────────────
 document.getElementById('btn-add-node').addEventListener('click', openModal);
 
 document.getElementById('btn-add-edge').addEventListener('click', () => {
@@ -596,7 +630,7 @@ document.getElementById('btn-add-edge').addEventListener('click', () => {
     S.canvas.startRendering();
     btn.classList.add('active');
     btn.textContent = '✕ Cancel';
-    toast('Drag from a node\'s output slot to another\'s input', 'ok');
+    toast('Drag from a node output to another node input');
   } else {
     btn.classList.remove('active');
     btn.textContent = '↗ Edge';
@@ -608,7 +642,10 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
   toast('Reloaded');
 });
 
-// ── Bootstrap ─────────────────────────────────────────────────────────────────
+document.getElementById('details-close').addEventListener('click', () => {
+  document.getElementById('details-modal').classList.add('hidden');
+});
+
 (async () => {
   try {
     initLiteGraph();
@@ -616,6 +653,6 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
     S.canvas.centerOnGraph();
   } catch (err) {
     console.error(err);
-    toast('Load failed: ' + err.message, 'err');
+    toast(`Load failed: ${err.message}`, 'err');
   }
 })();

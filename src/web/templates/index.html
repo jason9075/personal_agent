@@ -8,109 +8,146 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-
-<!-- Header -->
 <header id="app-header">
   <span class="logo">personal_agent</span>
   <span id="graph-badge" class="badge"></span>
   <div class="header-actions">
-    <button id="btn-add-node"  class="btn btn-primary">+ Node</button>
-    <button id="btn-add-edge"  class="btn btn-secondary" title="Click, then drag from one node to another">↗ Edge</button>
-    <button id="btn-reload"    class="btn btn-ghost">↺ Reload</button>
+    <button id="btn-add-node" class="btn btn-primary">+ Node</button>
+    <button id="btn-add-edge" class="btn btn-secondary" title="Click, then drag from one node to another">↗ Edge</button>
+    <button id="btn-reload" class="btn btn-ghost">↺ Reload</button>
   </div>
 </header>
 
-<!-- Main layout -->
 <div id="layout">
-
-  <!-- LiteGraph canvas -->
   <div id="canvas-wrap">
     <canvas id="lg-canvas"></canvas>
   </div>
 
-  <!-- Side panel -->
   <aside id="side-panel">
-
-    <div id="panel-tabs">
-      <button class="tab-btn active" data-tab="editor">Editor</button>
-      <button class="tab-btn"        data-tab="skills">Skills</button>
-    </div>
-
-    <!-- Editor tab -->
     <div id="tab-editor" class="tab-body">
-
       <div id="editor-hint" class="panel-hint">
-        <p>Select a node to edit its skill.</p>
+        <p>Select a node to edit its workflow settings.</p>
         <p class="muted">Right-click a connection to edit its condition.</p>
       </div>
 
-      <!-- Node + skill editor (shown when node selected) -->
       <div id="node-editor" class="hidden">
-
-        <!-- Node section -->
         <section>
           <h4>Node</h4>
           <div class="kv-row"><span>ID</span><code id="ne-node-id"></code></div>
-          <div class="kv-row"><span>Pass</span><span id="ne-pass" class="badge-pass"></span></div>
-          <div class="kv-row"><span>Skill</span><code id="ne-skill-id"></code></div>
+
+          <label class="field-label">Name</label>
+          <input type="text" id="ne-name">
+
+          <label class="field-label">Description</label>
+          <textarea id="ne-description" rows="3"></textarea>
+
+          <label class="field-label">Node Type</label>
+          <select id="ne-node-type">
+            <option value="router">router</option>
+            <option value="agent">agent</option>
+            <option value="tool">tool</option>
+            <option value="response">response</option>
+          </select>
+
+          <label class="field-label">Pass Index</label>
+          <input type="number" id="ne-pass-index" min="1" max="20">
+
           <div class="kv-row">
             <span>Enabled</span>
             <label class="toggle"><input type="checkbox" id="ne-enabled"><span class="slider"></span></label>
           </div>
-          <div class="btn-row">
-            <button id="ne-save"   class="btn btn-primary btn-sm">Save Node</button>
-            <button id="ne-delete" class="btn btn-danger  btn-sm">Delete</button>
+          <div class="kv-row">
+            <span>Start Node</span>
+            <label class="toggle"><input type="checkbox" id="ne-start-node"><span class="slider"></span></label>
+          </div>
+          <div class="kv-row">
+            <span>Send Reply</span>
+            <label class="toggle"><input type="checkbox" id="ne-send-response"><span class="slider"></span></label>
+          </div>
+          <div class="kv-row">
+            <span>Use Prev</span>
+            <label class="toggle"><input type="checkbox" id="ne-use-prev-output"><span class="slider"></span></label>
           </div>
         </section>
 
         <hr>
 
-        <!-- Skill section -->
         <section>
-          <h4>Skill — <code id="se-id-label"></code></h4>
+          <h4>Execution</h4>
+          <label class="field-label">Executor Path <span class="muted">(relative to repo root)</span></label>
+          <input type="text" id="ne-executor-path" spellcheck="false">
 
-          <label class="field-label">Display Name</label>
-          <input type="text" id="se-display-name">
+          <label class="field-label">Pre Hook Path <span class="muted">(optional)</span></label>
+          <input type="text" id="ne-pre-hook-path" spellcheck="false">
 
-          <label class="field-label">Description <span class="muted">(used by LLM router)</span></label>
-          <textarea id="se-description" rows="3"></textarea>
+          <label class="field-label">Post Hook Path <span class="muted">(optional)</span></label>
+          <input type="text" id="ne-post-hook-path" spellcheck="false">
 
-          <label class="field-label">Router Mode</label>
-          <select id="se-router-mode">
-            <option value="direct_regex">direct_regex — regex patterns</option>
-            <option value="llm">llm — LLM router</option>
-            <option value="always">always — auto-activate</option>
-          </select>
+          <label class="field-label">System Prompt Path <span class="muted">(repo-relative .md)</span></label>
+          <input type="text" id="ne-system-prompt-path" spellcheck="false">
 
-          <div id="se-patterns-wrap">
-            <label class="field-label">
-              Router Patterns
-              <span class="muted">one per line · use named groups <code>(?P&lt;key&gt;...)</code></span>
-            </label>
-            <textarea id="se-patterns" rows="4" spellcheck="false"></textarea>
-          </div>
+          <label class="field-label">Prompt Template Path <span class="muted">(optional)</span></label>
+          <input type="text" id="ne-prompt-template-path" spellcheck="false">
 
-          <label class="field-label">Pass 2 Mode</label>
-          <select id="se-pass2-mode">
-            <option value="never">never — return stdout directly</option>
-            <option value="always">always — LLM synthesis</option>
-            <option value="optional">optional — skill-specific logic</option>
-          </select>
+          <label class="field-label">Timeout Seconds</label>
+          <input type="number" id="ne-timeout-seconds" min="1">
 
-          <label class="field-label">Script Path <span class="muted">(relative to repo root)</span></label>
-          <input type="text" id="se-script-path" spellcheck="false">
+          <label class="field-label">Max LLM Calls</label>
+          <input type="number" id="ne-max-llm-calls" min="0">
 
-          <label class="field-label">System Prompt <span class="muted">(optional, for LLM skills)</span></label>
-          <textarea id="se-system-prompt" rows="5" spellcheck="false"></textarea>
-
-          <div class="btn-row">
-            <button id="se-save" class="btn btn-primary btn-sm">Save Skill</button>
+          <div class="hint-box">
+            <div class="kv-row"><span>PRE</span><code id="ne-hook-pre"></code></div>
+            <div class="kv-row"><span>RUN</span><code id="ne-hook-run"></code></div>
+            <div class="kv-row"><span>POST</span><code id="ne-hook-post"></code></div>
           </div>
         </section>
 
-      </div><!-- /node-editor -->
+        <hr>
 
-      <!-- Edge editor (shown when edge right-clicked) -->
+        <section>
+          <h4>Routing</h4>
+          <label class="field-label">Route Label</label>
+          <input type="text" id="ne-route-label">
+
+          <label class="field-label">Route Description</label>
+          <textarea id="ne-route-description" rows="3"></textarea>
+
+          <label class="field-label">Router Mode</label>
+          <select id="ne-router-mode">
+            <option value="direct_regex">direct_regex</option>
+            <option value="llm">llm</option>
+          </select>
+
+          <div id="ne-patterns-wrap">
+            <label class="field-label">Router Patterns <span class="muted">one per line</span></label>
+            <textarea id="ne-router-patterns" rows="4" spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <hr>
+
+        <section>
+          <h4>Prompt & Payload</h4>
+          <label class="field-label">Allowed Tools <span class="muted">one per line</span></label>
+          <textarea id="ne-allowed-tools" rows="3" spellcheck="false"></textarea>
+
+          <label class="field-label">Input Schema JSON</label>
+          <textarea id="ne-input-schema" rows="4" spellcheck="false"></textarea>
+
+          <label class="field-label">Output Schema JSON</label>
+          <textarea id="ne-output-schema" rows="4" spellcheck="false"></textarea>
+
+          <label class="field-label">Metadata JSON</label>
+          <textarea id="ne-metadata" rows="4" spellcheck="false"></textarea>
+        </section>
+
+        <div class="btn-row">
+          <button id="ne-details" class="btn btn-secondary btn-sm">Details</button>
+          <button id="ne-save" class="btn btn-primary btn-sm">Save Node</button>
+          <button id="ne-delete" class="btn btn-danger btn-sm">Delete</button>
+        </div>
+      </div>
+
       <div id="edge-editor" class="hidden">
         <section>
           <h4>Connection</h4>
@@ -125,50 +162,132 @@
           </select>
 
           <div id="ee-value-wrap">
-            <label class="field-label">Value <span class="muted">(e.g. 0 or a substring)</span></label>
+            <label class="field-label">Value</label>
             <input type="text" id="ee-cond-value">
           </div>
 
           <div class="btn-row">
-            <button id="ee-save"   class="btn btn-primary btn-sm">Save</button>
-            <button id="ee-delete" class="btn btn-danger  btn-sm">Delete</button>
+            <button id="ee-save" class="btn btn-primary btn-sm">Save</button>
+            <button id="ee-delete" class="btn btn-danger btn-sm">Delete</button>
           </div>
         </section>
-      </div><!-- /edge-editor -->
-
-    </div><!-- /tab-editor -->
-
-    <!-- Skills tab -->
-    <div id="tab-skills" class="tab-body hidden">
-      <p class="panel-hint muted">All defined skills. Click to edit.</p>
-      <div id="skills-list"></div>
+      </div>
     </div>
-
   </aside>
-</div><!-- /layout -->
+</div>
 
-<!-- Add-node modal -->
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-box">
     <h3>Add Node</h3>
 
-    <label class="field-label">Skill</label>
-    <select id="modal-skill"></select>
+    <label class="field-label">Node ID</label>
+    <input type="text" id="modal-node-id" spellcheck="false">
+
+    <label class="field-label">Name</label>
+    <input type="text" id="modal-name">
+
+    <label class="field-label">Node Type</label>
+    <select id="modal-node-type">
+      <option value="agent">agent</option>
+      <option value="tool">tool</option>
+      <option value="router">router</option>
+      <option value="response">response</option>
+    </select>
 
     <label class="field-label">Pass Index</label>
-    <input type="number" id="modal-pass" min="1" max="20" value="1">
-
-    <label class="field-label">Node ID <span class="muted">(auto-generated)</span></label>
-    <input type="text" id="modal-node-id" spellcheck="false">
+    <input type="number" id="modal-pass" min="1" max="20" value="2">
 
     <div class="btn-row" style="margin-top:16px">
       <button id="modal-confirm" class="btn btn-primary">Add</button>
-      <button id="modal-cancel"  class="btn btn-ghost">Cancel</button>
+      <button id="modal-cancel" class="btn btn-ghost">Cancel</button>
     </div>
   </div>
 </div>
 
-<!-- Toast -->
+<div id="details-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box modal-box-wide">
+    <h3>Node Details</h3>
+
+    <div class="details-grid">
+      <section>
+        <h4>Identity</h4>
+        <div class="kv-row"><span>ID</span><code id="dm-node-id"></code></div>
+        <div class="kv-row"><span>Name</span><code id="dm-name"></code></div>
+        <div class="kv-row"><span>Type</span><code id="dm-node-type"></code></div>
+        <div class="kv-row"><span>Pass</span><code id="dm-pass-index"></code></div>
+        <div class="kv-row"><span>Flags</span><code id="dm-flags"></code></div>
+      </section>
+
+      <section>
+        <h4>Lifecycle</h4>
+        <div class="kv-row"><span>Pre</span><code id="dm-pre-hook"></code></div>
+        <div class="kv-row"><span>Run</span><code id="dm-executor"></code></div>
+        <div class="kv-row"><span>Post</span><code id="dm-post-hook"></code></div>
+        <div class="kv-row"><span>Timeout</span><code id="dm-timeout"></code></div>
+        <div class="kv-row"><span>LLM Budget</span><code id="dm-max-llm"></code></div>
+      </section>
+
+      <section>
+        <h4>Routing</h4>
+        <div class="detail-block">
+          <div class="field-label">Route Label</div>
+          <pre id="dm-route-label"></pre>
+        </div>
+        <div class="detail-block">
+          <div class="field-label">Route Description</div>
+          <pre id="dm-route-description"></pre>
+        </div>
+        <div class="detail-block">
+          <div class="field-label">Router Patterns</div>
+          <pre id="dm-router-patterns"></pre>
+        </div>
+      </section>
+
+      <section>
+        <h4>System Prompt</h4>
+        <div class="detail-block">
+          <div class="field-label">Path</div>
+          <pre id="dm-system-prompt-path"></pre>
+        </div>
+        <pre id="dm-system-prompt"></pre>
+      </section>
+
+      <section>
+        <h4>Prompt Template</h4>
+        <div class="detail-block">
+          <div class="field-label">Path</div>
+          <pre id="dm-prompt-template-path"></pre>
+        </div>
+        <pre id="dm-prompt-template"></pre>
+      </section>
+
+      <section>
+        <h4>Input Schema</h4>
+        <pre id="dm-input-schema"></pre>
+      </section>
+
+      <section>
+        <h4>Output Schema</h4>
+        <pre id="dm-output-schema"></pre>
+      </section>
+
+      <section>
+        <h4>Allowed Tools</h4>
+        <pre id="dm-allowed-tools"></pre>
+      </section>
+
+      <section>
+        <h4>Metadata</h4>
+        <pre id="dm-metadata"></pre>
+      </section>
+    </div>
+
+    <div class="btn-row" style="margin-top:16px">
+      <button id="details-close" class="btn btn-primary">Close</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" aria-live="polite"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.min.js"></script>

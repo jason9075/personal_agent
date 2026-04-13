@@ -1,110 +1,143 @@
-"""FastAPI web application for workflow management.
-
-Runs in the same asyncio event loop as the Discord bot (via asyncio.gather).
-Serves a vis-network graph editor for managing skills and workflow nodes/edges.
-"""
+"""FastAPI web application for workflow management."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+from ..bot.prompts import load_prompt_path
+from ..bot.workflow_db import (
+    WorkflowEdge,
+    WorkflowNode,
+    delete_edge,
+    delete_node,
+    detect_node_hooks,
+    get_node,
+    list_nodes,
+    load_workflow_graph,
+    upsert_edge,
+    upsert_node,
+)
 
 _THIS_DIR = Path(__file__).resolve().parent
 _TEMPLATES_DIR = _THIS_DIR / "templates"
 _STATIC_DIR = _THIS_DIR / "static"
+_REPO_ROOT = _THIS_DIR.parents[2]
 
 
 def create_app(workflow_db_path: Path) -> FastAPI:
     app = FastAPI(title="personal_agent workflow", docs_url="/docs")
-
-    # Static assets (app.css, app.js)
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
-
-    # ── Pages ────────────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
         return HTMLResponse((_TEMPLATES_DIR / "index.html").read_text(encoding="utf-8"))
 
-    # ── Skills API ───────────────────────────────────────────────────────────
-
-    @app.get("/api/skills")
-    async def get_skills() -> JSONResponse:
-        from ..bot.workflow_db import list_skills
-        skills = list_skills(workflow_db_path)
-        return JSONResponse([_skill_to_dict(s) for s in skills])
-
-    @app.put("/api/skills/{skill_id}")
-    async def update_skill(skill_id: str, body: dict[str, Any]) -> JSONResponse:
-        from ..bot.workflow_db import SkillDef, get_skill, upsert_skill
-        existing = get_skill(workflow_db_path, skill_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail=f"skill '{skill_id}' not found")
-        updated = SkillDef(
-            id=skill_id,
-            display_name=str(body.get("display_name", existing.display_name)),
-            description=str(body.get("description", existing.description)),
-            router_mode=str(body.get("router_mode", existing.router_mode)),
-            router_patterns=list(body.get("router_patterns", existing.router_patterns)),
-            script_path=str(body.get("script_path", existing.script_path)),
-            system_prompt=str(body.get("system_prompt", existing.system_prompt)),
-            pass2_mode=str(body.get("pass2_mode", existing.pass2_mode)),
-            enabled=bool(body.get("enabled", existing.enabled)),
-        )
-        upsert_skill(workflow_db_path, updated)
-        return JSONResponse({"status": "ok", "id": skill_id})
-
-    # ── Workflow graph API ────────────────────────────────────────────────────
-
     @app.get("/api/workflow")
     async def get_workflow() -> JSONResponse:
-        from ..bot.workflow_db import load_workflow_graph
         graph = load_workflow_graph(workflow_db_path)
-        return JSONResponse({
-            "nodes": [
-                {"id": n.id, "pass_index": n.pass_index, "skill_id": n.skill_id, "enabled": n.enabled}
-                for n in graph.nodes
-            ],
-            "edges": [
-                {
-                    "id": e.id,
-                    "from_node_id": e.from_node_id,
-                    "to_node_id": e.to_node_id,
-                    "condition_type": e.condition_type,
-                    "condition_value": e.condition_value,
-                }
-                for e in graph.edges
-            ],
-            "skills": {sid: _skill_to_dict(s) for sid, s in graph.skills.items()},
-        })
+        return JSONResponse(
+            {
+                "nodes": [_node_to_dict(node) for node in graph.nodes],
+                "edges": [
+                    {
+                        "id": edge.id,
+                        "from_node_id": edge.from_node_id,
+                        "to_node_id": edge.to_node_id,
+                        "condition_type": edge.condition_type,
+                        "condition_value": edge.condition_value,
+                    }
+                    for edge in graph.edges
+                ],
+            }
+        )
 
-    @app.put("/api/workflow/nodes/{node_id}")
+    @app.get("/api/nodes")
+    async def get_nodes() -> JSONResponse:
+        return JSONResponse([_node_to_dict(node) for node in list_nodes(workflow_db_path)])
+
+    @app.get("/api/nodes/{node_id}")
+    async def get_node_endpoint(node_id: str) -> JSONResponse:
+        node = get_node(workflow_db_path, node_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"node '{node_id}' not found")
+        return JSONResponse(_node_to_dict(node))
+
+    @app.put("/api/nodes/{node_id}")
     async def upsert_node_endpoint(node_id: str, body: dict[str, Any]) -> JSONResponse:
-        from ..bot.workflow_db import WorkflowNode, upsert_node
+        existing = get_node(workflow_db_path, node_id)
+        if existing is None:
+            existing = WorkflowNode(
+                id=node_id,
+                name=node_id,
+                description="",
+                node_type="agent",
+                pass_index=1,
+                start_node=False,
+                enabled=True,
+                executor_path="",
+                pre_hook_path=None,
+                post_hook_path=None,
+                system_prompt_path=None,
+                prompt_template_path=None,
+                use_prev_output=True,
+                allowed_tools=[],
+                send_response=True,
+                input_schema=None,
+                output_schema=None,
+                timeout_seconds=600,
+                max_llm_calls=0,
+                route_label=node_id,
+                route_description="",
+                router_mode="llm",
+                router_patterns=[],
+                metadata={},
+            )
+
         try:
             node = WorkflowNode(
                 id=node_id,
-                pass_index=int(body["pass_index"]),
-                skill_id=str(body["skill_id"]),
-                enabled=bool(body.get("enabled", True)),
+                name=str(body.get("name", existing.name)),
+                description=str(body.get("description", existing.description)),
+                node_type=str(body.get("node_type", existing.node_type)),
+                pass_index=int(body.get("pass_index", existing.pass_index)),
+                start_node=bool(body.get("start_node", existing.start_node)),
+                enabled=bool(body.get("enabled", existing.enabled)),
+                executor_path=str(body.get("executor_path", existing.executor_path)),
+                pre_hook_path=_nullable_str(body.get("pre_hook_path", existing.pre_hook_path)),
+                post_hook_path=_nullable_str(body.get("post_hook_path", existing.post_hook_path)),
+                system_prompt_path=_nullable_str(body.get("system_prompt_path", existing.system_prompt_path)),
+                prompt_template_path=_nullable_str(body.get("prompt_template_path", existing.prompt_template_path)),
+                use_prev_output=bool(body.get("use_prev_output", existing.use_prev_output)),
+                allowed_tools=_as_string_list(body.get("allowed_tools", existing.allowed_tools)),
+                send_response=bool(body.get("send_response", existing.send_response)),
+                input_schema=_as_json_obj(body.get("input_schema", existing.input_schema)),
+                output_schema=_as_json_obj(body.get("output_schema", existing.output_schema)),
+                timeout_seconds=int(body.get("timeout_seconds", existing.timeout_seconds)),
+                max_llm_calls=int(body.get("max_llm_calls", existing.max_llm_calls)),
+                route_label=_nullable_str(body.get("route_label", existing.route_label)),
+                route_description=_nullable_str(body.get("route_description", existing.route_description)),
+                router_mode=str(body.get("router_mode", existing.router_mode)),
+                router_patterns=_as_string_list(body.get("router_patterns", existing.router_patterns)),
+                metadata=_as_json_dict(body.get("metadata", existing.metadata)),
             )
-        except (KeyError, ValueError) as exc:
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+
         upsert_node(workflow_db_path, node)
         return JSONResponse({"status": "ok", "id": node_id})
 
-    @app.delete("/api/workflow/nodes/{node_id}")
+    @app.delete("/api/nodes/{node_id}")
     async def delete_node_endpoint(node_id: str) -> JSONResponse:
-        from ..bot.workflow_db import delete_node
         delete_node(workflow_db_path, node_id)
         return JSONResponse({"status": "ok"})
 
     @app.post("/api/workflow/edges")
     async def add_edge_endpoint(body: dict[str, Any]) -> JSONResponse:
-        from ..bot.workflow_db import WorkflowEdge, upsert_edge
         try:
             edge = WorkflowEdge(
                 id=0,
@@ -120,24 +153,103 @@ def create_app(workflow_db_path: Path) -> FastAPI:
 
     @app.delete("/api/workflow/edges/{edge_id}")
     async def delete_edge_endpoint(edge_id: int) -> JSONResponse:
-        from ..bot.workflow_db import delete_edge
         delete_edge(workflow_db_path, edge_id)
         return JSONResponse({"status": "ok"})
+
+    @app.post("/api/prompt-preview")
+    async def prompt_preview_endpoint(body: dict[str, Any]) -> JSONResponse:
+        path_str = _nullable_str(body.get("path"))
+        return JSONResponse({
+            "path": path_str,
+            "content": _safe_prompt_preview(path_str),
+        })
 
     return app
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+def _nullable_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
-def _skill_to_dict(s: Any) -> dict:
+
+def _as_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        return [line.strip() for line in text.splitlines() if line.strip()]
+    raise TypeError("expected string list")
+
+
+def _as_json_obj(value: Any) -> dict | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        if not isinstance(parsed, dict):
+            raise TypeError("expected JSON object")
+        return parsed
+    raise TypeError("expected JSON object or JSON string")
+
+
+def _as_json_dict(value: Any) -> dict:
+    if value in ("", None):
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        if not isinstance(parsed, dict):
+            raise TypeError("expected JSON object")
+        return parsed
+    raise TypeError("expected JSON object or JSON string")
+
+
+def _node_to_dict(node: WorkflowNode) -> dict[str, Any]:
+    hook_info = detect_node_hooks(node, _REPO_ROOT)
     return {
-        "id": s.id,
-        "display_name": s.display_name,
-        "description": s.description,
-        "router_mode": s.router_mode,
-        "router_patterns": s.router_patterns,
-        "script_path": s.script_path,
-        "system_prompt": s.system_prompt,
-        "pass2_mode": s.pass2_mode,
-        "enabled": s.enabled,
+        "id": node.id,
+        "name": node.name,
+        "description": node.description,
+        "node_type": node.node_type,
+        "pass_index": node.pass_index,
+        "start_node": node.start_node,
+        "enabled": node.enabled,
+        "executor_path": node.executor_path,
+        "pre_hook_path": node.pre_hook_path,
+        "post_hook_path": node.post_hook_path,
+        "system_prompt_path": node.system_prompt_path,
+        "prompt_template_path": node.prompt_template_path,
+        "system_prompt_preview": _safe_prompt_preview(node.system_prompt_path),
+        "prompt_template_preview": _safe_prompt_preview(node.prompt_template_path),
+        "use_prev_output": node.use_prev_output,
+        "allowed_tools": node.allowed_tools,
+        "send_response": node.send_response,
+        "input_schema": node.input_schema,
+        "output_schema": node.output_schema,
+        "timeout_seconds": node.timeout_seconds,
+        "max_llm_calls": node.max_llm_calls,
+        "route_label": node.route_label,
+        "route_description": node.route_description,
+        "router_mode": node.router_mode,
+        "router_patterns": node.router_patterns,
+        "metadata": node.metadata,
+        "hooks": hook_info,
     }
+
+
+def _safe_prompt_preview(path_str: str | None) -> str:
+    if not path_str:
+        return ""
+    try:
+        return load_prompt_path(path_str)
+    except RuntimeError as exc:
+        return f"[prompt load error] {exc}"

@@ -2,128 +2,91 @@
 
 ## Project Overview
 
-`personal_agent` is a private Discord bot built around an **N-Pass Workflow Engine**. Incoming Discord messages are routed through a configurable graph of skill nodes across multiple passes. The workflow topology and all skill metadata are stored in `db/workflow.sqlite3` and managed through the web UI at `http://localhost:8765`.
+`personal_agent` is a private Discord bot built around a **node-first N-Pass Workflow Engine**. Workflow state lives in `db/workflow.sqlite3` and is managed from the web UI at `http://localhost:8765`.
 
 ## Architecture
 
 ### N-Pass Engine
 
+```text
+message -> start_node -> route by outgoing edges -> node lifecycle -> Discord reply?
 ```
-message → Pass 1 routing → skill execution → Pass 2 synthesis? → Discord reply
-                                                     │
-                                          (graph edges define
-                                           which passes follow)
+
+Node lifecycle:
+
+```text
+pre_hook.py? -> run.py -> post_hook.py?
 ```
+
+Core rules:
+
+- `start_node` is unique and is usually the intent router.
+- Route nodes may only choose nodes reachable through enabled outgoing edges.
+- Nodes control prompt, tooling, hooks, and `send_response`.
+- Hook files are discovered by scanning the node directory for `pre_hook.py`, `run.py`, and `post_hook.py`.
+- Prompt bodies live in repo `.md` files. The workflow DB stores prompt file paths, not long prompt text blobs.
 
 Key modules:
 
 | File | Role |
 |------|------|
-| `src/bot/engine.py` | `route_pass1()`, `execute_and_synthesize()` — the execution loop |
-| `src/bot/workflow_db.py` | SQLite schema + CRUD for `skills`, `workflow_nodes`, `workflow_edges` |
-| `src/bot/skills.py` | Subprocess helpers, reply formatters, direct-route functions |
-| `src/bot/bot.py` | Discord event handler + `asyncio.gather` with FastAPI web server |
-| `src/web/app.py` | FastAPI app: REST API for workflow and skill management |
-| `src/web/templates/index.html` | LiteGraph.js graph editor UI |
-| `src/web/static/app.js` | Graph rendering, API integration, connection change handling |
-| `skills/*/run.py` | Skill subprocess entry points (`--args-json` protocol) |
-
-### Skill execution protocol
-
-All skills use `--args-json`:
-
-```bash
-python skills/<name>/run.py --args-json '{"key": "value"}'
-```
-
-Old-style individual CLI flags remain supported for `just` targets (backward compatibility).
-
-### Skill metadata — DB only
-
-Skills are defined entirely in `db/workflow.sqlite3` (`skills` table). There are **no SKILL.md files**. The web UI (`/api/skills`, `/api/workflow`) is the canonical way to read and write skill metadata (name, description, router patterns, system prompt, pass2_mode, script_path).
-
-### pass2_mode
-
-| Value | Behaviour |
-|-------|-----------|
-| `never` | Return subprocess stdout directly |
-| `always` | LLM synthesis via `codex exec` |
-| `optional` | Skill-specific logic in `engine._should_synthesize()` |
-
-### Workflow graph schema
-
-```sql
-skills(id, display_name, description, router_mode, router_patterns,
-       script_path, system_prompt, pass2_mode, enabled)
-workflow_nodes(id, pass_index, skill_id, enabled)
-workflow_edges(id, from_node_id, to_node_id, condition_type, condition_value)
-```
-
-Node IDs follow convention `p{pass_index}:{skill_id}` (e.g. `p1:echo`).
-
-### Adding a skill
-
-1. Create `skills/<name>/run.py` — accepts `--args-json`, writes to stdout, exits 0 on success.
-2. Insert a skill row via web UI or add to `_SEED_SKILLS` in `workflow_db.py`.
-3. Add a `WorkflowNode` row via web UI or `_SEED_NODES`.
-4. For direct routing: add a named-group regex pattern in the skill's `router_patterns` field (e.g. `(?P<text>.+)`), or add a built-in router function in `skills.py` and register it in `engine._try_direct_route()`.
-
-### Combined process
-
-The Discord bot and FastAPI web server run in the **same asyncio event loop**:
-
-```python
-await asyncio.gather(client.start(token), uvicorn_server.serve())
-```
-
-`uvicorn_server.config.install_signal_handlers = False` prevents conflicts with discord.py's signal handling.
+| `src/bot/engine.py` | workflow execution loop, router behavior, node lifecycle |
+| `src/bot/workflow_db.py` | SQLite schema, migrations, node/edge CRUD, hook scanning |
+| `src/bot/skills.py` | shared route parsing and Codex reply helpers |
+| `src/bot/bot.py` | Discord event handler + FastAPI server |
+| `src/web/app.py` | REST API for DAG management |
+| `src/web/static/app.js` | LiteGraph DAG editor |
+| `skills/*/run.py` | node executors |
 
 ## Module Organisation
 
-- `src/bot/` — Discord bot runtime, engine, DB, scheduler, prompts
-- `src/web/` — FastAPI app, HTML templates, static assets
-- `src/finance_report/` — RSS finance pipeline (independent of bot routing)
-- `skills/*/` — Skill subprocess entry points
-- `config/` — Finance sources TOML
-- `db/` — SQLite runtime state (git-ignored)
+- `src/bot/` — bot runtime, engine, workflow DB, scheduler, prompts
+- `src/web/` — FastAPI app, templates, static files
+- `src/finance_report/` — RSS finance pipeline
+- `skills/*/` — executor scripts used by workflow nodes
+- `config/` — local finance source config
+- `db/` — runtime SQLite state, git-ignored
 
-Keep new bot logic in `src/bot/`. Keep new web routes in `src/web/app.py`. Do not embed skill-specific logic in `engine.py` — use the skill's `script_path` and `pass2_mode`.
+Keep workflow semantics in `src/bot/engine.py` and `src/bot/workflow_db.py`. Keep node-specific work in executor scripts, not in the Discord event handler.
 
 ## Development Commands
 
 ```bash
-nix develop          # required: loads all Python deps including fastapi, uvicorn, aiofiles
-just bot             # run bot + web UI (port 8765)
-just watch           # auto-restart on .py or .toml changes
-just finance-report  # run finance pipeline directly
+nix develop
+just bot
+just watch
+just finance-report
 ruff check src
 mypy src
 ```
 
-`just --list` shows the full task surface. Prefer `just` targets over ad hoc commands.
+Prefer `just` targets over ad hoc shell commands.
 
 ## Coding Style
 
-- 4-space indentation, type hints on all public functions.
-- `snake_case` for functions/variables, `UPPER_SNAKE_CASE` for env-backed constants.
-- Keep Discord event handlers narrow; push logic into `engine.py` or helper modules.
-- Prompts live in `src/bot/prompt/` and are loaded at runtime — never hardcode prompt text in Python.
-- Use `ruff` and `mypy` before committing.
+- 4-space indentation, type hints on public functions.
+- `snake_case` for functions and variables, `UPPER_SNAKE_CASE` for env-backed constants.
+- Prompts must live under `src/bot/prompt/` and load dynamically at runtime.
+- Avoid hardcoding workflow structure in Python when the DAG can express it.
 
 ## Testing
 
-No automated test suite yet. Minimum gate: `ruff check src && mypy src`, then manual `just bot`.
+No formal test suite yet. Minimum validation:
 
-When adding tests: place in `tests/`, name `test_*.py`, focus on routing logic, cron parsing, and skill argument extraction.
+```bash
+python -m compileall src skills
+ruff check src
+mypy src
+```
+
+For manual verification, run `just bot` and inspect `http://localhost:8765`.
 
 ## Commit Style
 
-Conventional Commits: `feat:`, `fix:`, `chore:`, `refactor:` followed by a brief imperative summary.
-
-PRs should list validation steps and note any `.env` key changes or Discord permission changes.
+Use Conventional Commits such as `feat:`, `fix:`, `refactor:`, `chore:`.
 
 ## Security
 
-- Never commit `.env` or real tokens.
-- `db/` is runtime state — do not commit SQLite files.
-- `ALLOWED_USER_ID` gates all Discord responses; only one user ID is supported.
+- Never commit `.env`, real tokens, or private feed configuration.
+- `db/`, `.local/`, and `notes/finance/` are runtime artifacts and must stay out of git.
+- `ALLOWED_USER_ID` is the only user allowed to trigger Discord replies.

@@ -19,6 +19,7 @@ def _optional_env(name: str, default: str = "") -> str:
 ALLOWED_USER_ID = _require_env("ALLOWED_USER_ID")
 GEMINI_TOOL_MODEL = _optional_env("GEMINI_TOOL_MODEL")
 PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
+NODE_PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 SCHEDULE_DB_PATH = Path(__file__).resolve().parents[2] / "db" / "bot_scheduler.sqlite3"
 WORKFLOW_DB_PATH = Path(__file__).resolve().parents[2] / "db" / "workflow.sqlite3"

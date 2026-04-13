@@ -1,12 +1,32 @@
 """Prompt loading helpers for the Discord bot."""
 from __future__ import annotations
 
-from .config import PROMPT_DIR
+from pathlib import Path
+
+from .config import NODE_PROMPT_DIR, PROMPT_DIR
 
 
 def load_prompt(name: str) -> str:
     """Read a bot prompt file on demand."""
     path = PROMPT_DIR / name
+    if not path.exists():
+        raise RuntimeError(f"prompt not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def load_prompt_path(path_str: str | None) -> str:
+    """Read a node prompt from a repo-relative path on demand."""
+    if not path_str:
+        return ""
+
+    raw_path = Path(path_str)
+    if raw_path.is_absolute():
+        path = raw_path
+    else:
+        path = raw_path
+        if not path.exists():
+            path = NODE_PROMPT_DIR / raw_path
+
     if not path.exists():
         raise RuntimeError(f"prompt not found: {path}")
     return path.read_text(encoding="utf-8")
