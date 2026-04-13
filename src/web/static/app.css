@@ -35,7 +35,7 @@
   --surface2: var(--nord2);
   --border:   var(--nord3);
   --text:     var(--nord5);
-  --muted:    var(--nord3);
+  --muted:    #93A1B7;
   --accent:   var(--nord9);
   --danger:   var(--nord11);
   --success:  var(--nord14);
@@ -154,7 +154,7 @@ html, body {
   flex-direction: column;
   gap: 6px;
   padding: 24px 0;
-  color: var(--nord3);
+  color: var(--nord4);
   line-height: 1.65;
 }
 
@@ -165,7 +165,7 @@ h4 {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .9px;
-  color: var(--nord3);
+  color: #AEBACC;
   margin-bottom: 10px;
 }
 
@@ -181,7 +181,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .kv-row > span:first-child {
   width: 54px;
   flex-shrink: 0;
-  color: var(--nord3);
+  color: #A7B4C7;
 }
 
 .badge-pass {
@@ -204,17 +204,20 @@ code {
   word-break: break-all;
 }
 
-.muted { color: var(--nord3); }
+.muted { color: var(--muted); }
 
 /* ── Forms ── */
 .field-label {
   display: block;
   font-size: 11px;
-  color: var(--nord4);
+  color: var(--nord5);
   margin: 10px 0 4px;
 }
 .field-label code { font-size: 10px; }
-.field-label .muted { font-size: 10px; }
+.field-label .muted {
+  font-size: 10px;
+  color: #9EADC1;
+}
 
 input[type="text"],
 input[type="number"],
