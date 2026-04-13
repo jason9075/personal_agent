@@ -20,6 +20,8 @@ const S = {
   _prevLinkIds: new Set(),
   addEdgeMode: false,
   isHydrating: false,
+  nodeDrafts: {},
+  selectedNodeId: null,
 };
 
 async function api(method, path, body) {
@@ -137,6 +139,25 @@ function initLiteGraph() {
   S.canvas.render_canvas_border = false;
   S.canvas.render_connections_shadows = false;
   S.canvas.show_info = false;
+  S.canvas.allow_searchbox = false;
+  S.canvas.allow_dragnodes = true;
+  S.canvas.getMenuOptions = () => [];
+  S.canvas.getCanvasMenuOptions = () => [];
+  S.canvas.getNodeMenuOptions = () => [];
+  S.canvas.getGroupMenuOptions = () => [];
+  S.canvas.getLinkMenuOptions = () => [];
+  S.canvas.onShowSearchBox = () => false;
+  S.graph.onDblClick = () => false;
+
+  const canvasEl = document.getElementById('lg-canvas');
+  canvasEl.addEventListener('contextmenu', event => {
+    const edge = S.canvas.over_link_center || S.canvas.over_link;
+    if (!edge) event.preventDefault();
+  });
+  canvasEl.addEventListener('dblclick', event => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
 
   S.canvas.onNodeSelected = lnode => {
     if (lnode) renderNodeEditor(lnode);
@@ -310,6 +331,7 @@ async function handleLinkRemoved(linkId) {
 }
 
 function showHint() {
+  S.selectedNodeId = null;
   document.getElementById('editor-hint').classList.remove('hidden');
   document.getElementById('node-editor').classList.add('hidden');
   document.getElementById('edge-editor').classList.add('hidden');
@@ -329,8 +351,10 @@ function showEdgeEditor() {
 
 function renderNodeEditor(lnode) {
   showNodeEditor();
-  const node = S.graphData.nodes.find(item => item.id === lnode.properties.node_id);
+  const baseNode = S.graphData.nodes.find(item => item.id === lnode.properties.node_id);
+  const node = mergeNodeDraft(baseNode);
   if (!node) return;
+  S.selectedNodeId = node.id;
 
   const hooks = node.hooks || {};
   setValue('ne-node-id', node.id, true);
@@ -363,18 +387,7 @@ function renderNodeEditor(lnode) {
   syncRouterPatternVisibility();
 
   document.getElementById('ne-router-mode').onchange = syncRouterPatternVisibility;
-
-  document.getElementById('ne-save').onclick = async () => {
-    try {
-      await PUT(`/api/nodes/${node.id}`, collectNodeForm(node.id));
-      await loadGraph();
-      const refreshed = findLiteNodeByDbId(node.id);
-      if (refreshed) renderNodeEditor(refreshed);
-      toast('Node saved');
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  };
+  bindDraftInputs();
 
   document.getElementById('ne-details').onclick = async () => {
     await renderNodeDetails(collectNodeForm(node.id), node.hooks || {});
@@ -384,6 +397,8 @@ function renderNodeEditor(lnode) {
     if (!confirm(`Delete node "${node.id}"? Its connections will also be removed.`)) return;
     try {
       await DEL(`/api/nodes/${node.id}`);
+      delete S.nodeDrafts[node.id];
+      updateSaveState();
       await loadGraph();
       toast('Node deleted');
     } catch (err) {
@@ -392,43 +407,30 @@ function renderNodeEditor(lnode) {
   };
 }
 
-async function renderNodeDetails(node, hooks = {}) {
-  const [systemPromptPreview, promptTemplatePreview] = await Promise.all([
-    previewPrompt(node.system_prompt_path),
-    previewPrompt(node.prompt_template_path),
-  ]);
-
-  setText('dm-node-id', node.id || '(unsaved)');
-  setText('dm-name', node.name || '(empty)');
-  setText('dm-node-type', node.node_type || '(empty)');
-  setText('dm-pass-index', `Pass ${node.pass_index ?? '-'}`);
-  setText('dm-flags', formatFlags(node));
-
-  setText('dm-pre-hook', hooks.effective_pre_hook_path || node.pre_hook_path || '(none)');
-  setText('dm-executor', hooks.effective_executor_path || node.executor_path || '(none)');
-  setText('dm-post-hook', hooks.effective_post_hook_path || node.post_hook_path || '(none)');
-  setText('dm-timeout', `${node.timeout_seconds ?? 0}s`);
-  setText('dm-max-llm', String(node.max_llm_calls ?? 0));
-
-  setPre('dm-route-label', node.route_label || '(empty)');
-  setPre('dm-route-description', node.route_description || '(empty)');
-  setPre('dm-router-patterns', (node.router_patterns || []).length ? node.router_patterns.join('\n') : '(none)');
-  setPre('dm-system-prompt-path', node.system_prompt_path || '(none)');
-  setPre('dm-system-prompt', systemPromptPreview || '(empty)');
-  setPre('dm-prompt-template-path', node.prompt_template_path || '(none)');
-  setPre('dm-prompt-template', promptTemplatePreview || '(empty)');
-  setPre('dm-input-schema', stringifyJson(node.input_schema) || '(empty)');
-  setPre('dm-output-schema', stringifyJson(node.output_schema) || '(empty)');
-  setPre('dm-allowed-tools', (node.allowed_tools || []).length ? node.allowed_tools.join('\n') : '(none)');
-  setPre('dm-metadata', stringifyJson(node.metadata || {}) || '{}');
-
-  document.getElementById('details-modal').classList.remove('hidden');
+function mergeNodeDraft(node) {
+  if (!node) return null;
+  const draft = S.nodeDrafts[node.id];
+  if (!draft) return { ...node };
+  return { ...node, ...draft };
 }
 
-async function previewPrompt(path) {
-  if (!path) return '';
-  const result = await POST('/api/prompt-preview', { path });
-  return result.content || '';
+async function renderNodeDetails(node, hooks = {}) {
+  const detail = await POST('/api/node-details-preview', node);
+
+  setText('dm-name', node.name || '(empty)');
+  setText('dm-pass-index', `Pass ${node.pass_index ?? '-'}`);
+  setPre('dm-description', node.description || '(empty)');
+  setText('dm-timeout', `${node.timeout_seconds ?? 0}s`);
+  setPre('dm-system-prompt-path', detail.system_prompt_path || '(none)');
+  setPre('dm-allowed-tools', (detail.resolved_tools || []).length ? detail.resolved_tools.join('\n') : '(none)');
+  setPre('dm-system-prompt', detail.system_prompt || '(empty)');
+  setPre('dm-preview-prompt', detail.preview_prompt || '(empty)');
+  setCode('dm-pre-hook-code', detail.execution_code.pre_hook || '(none)');
+  setCode('dm-run-code', detail.execution_code.run || '(none)');
+  setCode('dm-post-hook-code', detail.execution_code.post_hook || '(none)');
+  document.getElementById('dm-execution-details').open = false;
+
+  document.getElementById('details-modal').classList.remove('hidden');
 }
 
 function renderEdgeEditor(linkId, edgeData) {
@@ -499,6 +501,84 @@ function collectNodeForm(nodeId) {
   };
 }
 
+function bindDraftInputs() {
+  [
+    'ne-name',
+    'ne-description',
+    'ne-node-type',
+    'ne-pass-index',
+    'ne-enabled',
+    'ne-start-node',
+    'ne-send-response',
+    'ne-use-prev-output',
+    'ne-executor-path',
+    'ne-pre-hook-path',
+    'ne-post-hook-path',
+    'ne-system-prompt-path',
+    'ne-prompt-template-path',
+    'ne-timeout-seconds',
+    'ne-max-llm-calls',
+    'ne-route-label',
+    'ne-route-description',
+    'ne-router-mode',
+    'ne-router-patterns',
+    'ne-allowed-tools',
+    'ne-input-schema',
+    'ne-output-schema',
+    'ne-metadata',
+  ].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el || el.dataset.draftBound === 'true') return;
+    const handler = () => {
+      if (S.selectedNodeId) markNodeDraft(S.selectedNodeId);
+    };
+    el.addEventListener('input', handler);
+    el.addEventListener('change', handler);
+    el.dataset.draftBound = 'true';
+  });
+}
+
+function markNodeDraft(nodeId) {
+  try {
+    S.nodeDrafts[nodeId] = collectNodeForm(nodeId);
+    applyDraftToCanvas(nodeId, S.nodeDrafts[nodeId]);
+    updateSaveState();
+  } catch (_err) {
+    S.nodeDrafts[nodeId] = collectNodeFormLoose(nodeId);
+    applyDraftToCanvas(nodeId, S.nodeDrafts[nodeId]);
+    updateSaveState();
+  }
+}
+
+function collectNodeFormLoose(nodeId) {
+  return {
+    id: nodeId,
+    name: document.getElementById('ne-name').value.trim(),
+    description: document.getElementById('ne-description').value.trim(),
+    node_type: document.getElementById('ne-node-type').value,
+    pass_index: parseInt(document.getElementById('ne-pass-index').value || '1', 10),
+    enabled: document.getElementById('ne-enabled').checked,
+    start_node: document.getElementById('ne-start-node').checked,
+    send_response: document.getElementById('ne-send-response').checked,
+    use_prev_output: document.getElementById('ne-use-prev-output').checked,
+    executor_path: document.getElementById('ne-executor-path').value.trim(),
+    pre_hook_path: blankToNull(document.getElementById('ne-pre-hook-path').value),
+    post_hook_path: blankToNull(document.getElementById('ne-post-hook-path').value),
+    system_prompt_path: blankToNull(document.getElementById('ne-system-prompt-path').value),
+    prompt_template_path: blankToNull(document.getElementById('ne-prompt-template-path').value),
+    timeout_seconds: parseInt(document.getElementById('ne-timeout-seconds').value || '600', 10),
+    max_llm_calls: parseInt(document.getElementById('ne-max-llm-calls').value || '0', 10),
+    route_label: blankToNull(document.getElementById('ne-route-label').value),
+    route_description: blankToNull(document.getElementById('ne-route-description').value),
+    router_mode: document.getElementById('ne-router-mode').value,
+    router_patterns: splitLines(document.getElementById('ne-router-patterns').value),
+    allowed_tools: splitLines(document.getElementById('ne-allowed-tools').value),
+    input_schema: document.getElementById('ne-input-schema').value.trim(),
+    output_schema: document.getElementById('ne-output-schema').value.trim(),
+    metadata: document.getElementById('ne-metadata').value.trim(),
+  };
+}
+
 function stringifyJson(value) {
   if (!value || (typeof value === 'object' && Object.keys(value).length === 0)) return '';
   return JSON.stringify(value, null, 2);
@@ -542,6 +622,87 @@ function setPre(id, value) {
   document.getElementById(id).textContent = value;
 }
 
+function setCode(id, value) {
+  const el = document.getElementById(id);
+  const detected = detectCodeLanguage(value);
+  el.innerHTML = renderHighlightedCode(value, detected);
+}
+
+function detectCodeLanguage(source) {
+  const text = source || '';
+  if (!text.trim() || text.trim() === '(none)') return 'text';
+  if (/^\s*[{[]/.test(text) || /:\s*[{[]/.test(text)) return 'json';
+  if (/\b(def|class|import|from|async|await|elif|except|lambda)\b/.test(text) || /__name__\s*==/.test(text)) {
+    return 'python';
+  }
+  if (/\b(function|const|let|var|=>|async function|document\.|window\.)\b/.test(text)) {
+    return 'javascript';
+  }
+  if (/\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bCREATE TABLE\b/i.test(text)) {
+    return 'sql';
+  }
+  if (/^\s*#\s|^\s*-\s/m.test(text)) return 'markdown';
+  return 'text';
+}
+
+function renderHighlightedCode(source, language) {
+  const escaped = escapeHtml(source || '');
+  if (language === 'python') return withLangBadge(highlightPython(escaped), language);
+  if (language === 'javascript') return withLangBadge(highlightJavaScript(escaped), language);
+  if (language === 'json') return withLangBadge(highlightJson(escaped), language);
+  if (language === 'sql') return withLangBadge(highlightSql(escaped), language);
+  return withLangBadge(escaped, language);
+}
+
+function withLangBadge(html, language) {
+  return `<span class="tok-lang">${language}</span>\n${html}`;
+}
+
+function escapeHtml(text) {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function highlightPython(text) {
+  let html = text;
+  html = html.replace(/(#.*)$/gm, '<span class="tok-comment">$1</span>');
+  html = html.replace(/("""[\s\S]*?"""|'''[\s\S]*?'''|"[^"\n]*"|'[^'\n]*')/g, '<span class="tok-string">$1</span>');
+  html = html.replace(/\b(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/g, '<span class="tok-keyword">$1</span> <span class="tok-function">$2</span>');
+  html = html.replace(/\b(import|from|as|return|if|elif|else|for|while|try|except|finally|with|async|await|pass|break|continue|raise|yield|in|is|not|and|or|lambda|None|True|False)\b/g, '<span class="tok-keyword">$1</span>');
+  html = html.replace(/\b(print|len|str|int|float|dict|list|set|tuple|open|range|enumerate|zip|json)\b/g, '<span class="tok-builtin">$1</span>');
+  html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="tok-number">$1</span>');
+  return html;
+}
+
+function highlightJavaScript(text) {
+  let html = text;
+  html = html.replace(/(\/\/.*)$/gm, '<span class="tok-comment">$1</span>');
+  html = html.replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g, '<span class="tok-string">$1</span>');
+  html = html.replace(/\b(function)\s+([A-Za-z_][A-Za-z0-9_]*)/g, '<span class="tok-keyword">$1</span> <span class="tok-function">$2</span>');
+  html = html.replace(/\b(const|let|var|return|if|else|for|while|switch|case|break|continue|try|catch|finally|async|await|import|from|export|new|throw|null|true|false)\b/g, '<span class="tok-keyword">$1</span>');
+  html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="tok-number">$1</span>');
+  return html;
+}
+
+function highlightJson(text) {
+  let html = text;
+  html = html.replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, '<span class="tok-function">$1</span>$2');
+  html = html.replace(/:\s*("(?:[^"\\]|\\.)*")/g, ': <span class="tok-string">$1</span>');
+  html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="tok-number">$1</span>');
+  html = html.replace(/\b(true|false|null)\b/g, '<span class="tok-keyword">$1</span>');
+  return html;
+}
+
+function highlightSql(text) {
+  let html = text;
+  html = html.replace(/\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|ORDER BY|GROUP BY|LIMIT|CREATE|TABLE|INDEX|VALUES|SET|INTO|ON|AND|OR|NOT|NULL)\b/gi, '<span class="tok-keyword">$1</span>');
+  html = html.replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, '<span class="tok-string">$1</span>');
+  html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="tok-number">$1</span>');
+  return html;
+}
+
 function formatFlags(node) {
   const flags = [];
   if (node.enabled) flags.push('enabled');
@@ -563,6 +724,38 @@ function syncEdgeValueVisibility() {
 
 function findLiteNodeByDbId(nodeId) {
   return S.graph._nodes.find(node => node.properties.node_id === nodeId) || null;
+}
+
+function updateSaveState() {
+  const dirtyCount = Object.keys(S.nodeDrafts).length;
+  const btn = document.getElementById('btn-save-all');
+  const badge = document.getElementById('save-state-badge');
+  btn.textContent = dirtyCount > 0 ? `Save (${dirtyCount})` : 'Save';
+  btn.classList.toggle('dirty', dirtyCount > 0);
+  badge.classList.toggle('hidden', dirtyCount === 0);
+}
+
+function applyDraftToCanvas(nodeId, draft) {
+  const lnode = findLiteNodeByDbId(nodeId);
+  if (!lnode || !draft) return;
+
+  lnode.title = draft.name || nodeId;
+  lnode.properties = {
+    ...lnode.properties,
+    node_id: nodeId,
+    name: draft.name || nodeId,
+    node_type: draft.node_type || 'agent',
+    pass_index: draft.pass_index || 1,
+    enabled: !!draft.enabled,
+    start_node: !!draft.start_node,
+    send_response: !!draft.send_response,
+    hooks: lnode.properties.hooks || {},
+  };
+  lnode._applyColors();
+
+  const passColumn = Math.max(0, (draft.pass_index || 1) - 1);
+  lnode.pos = [60 + (passColumn * 320), lnode.pos[1]];
+  S.canvas.setDirty(true, true);
 }
 
 function openModal() {
@@ -620,6 +813,41 @@ document.getElementById('modal-cancel').addEventListener('click', () => {
 
 document.getElementById('btn-add-node').addEventListener('click', openModal);
 
+document.getElementById('btn-save-all').addEventListener('click', async () => {
+  const entries = Object.entries(S.nodeDrafts);
+  if (!entries.length) {
+    toast('No unsaved changes');
+    return;
+  }
+
+  try {
+    const selectedNodeIdBeforeSave = S.selectedNodeId;
+    for (const [nodeId, draft] of entries) {
+      const payload = nodeId === S.selectedNodeId ? collectNodeForm(nodeId) : normalizeDraftForSave(draft);
+      await PUT(`/api/nodes/${nodeId}`, payload);
+    }
+    S.nodeDrafts = {};
+    await loadGraph();
+    if (selectedNodeIdBeforeSave) {
+      const refreshed = findLiteNodeByDbId(selectedNodeIdBeforeSave);
+      if (refreshed) renderNodeEditor(refreshed);
+    }
+    updateSaveState();
+    toast('Saved');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
+function normalizeDraftForSave(draft) {
+  return {
+    ...draft,
+    input_schema: typeof draft.input_schema === 'string' ? parseJsonOrNull(draft.input_schema) : draft.input_schema,
+    output_schema: typeof draft.output_schema === 'string' ? parseJsonOrNull(draft.output_schema) : draft.output_schema,
+    metadata: typeof draft.metadata === 'string' ? parseJsonOrObject(draft.metadata) : draft.metadata,
+  };
+}
+
 document.getElementById('btn-add-edge').addEventListener('click', () => {
   S.addEdgeMode = !S.addEdgeMode;
   const btn = document.getElementById('btn-add-edge');
@@ -638,6 +866,8 @@ document.getElementById('btn-add-edge').addEventListener('click', () => {
 });
 
 document.getElementById('btn-reload').addEventListener('click', async () => {
+  S.nodeDrafts = {};
+  updateSaveState();
   await loadGraph();
   toast('Reloaded');
 });
@@ -646,10 +876,15 @@ document.getElementById('details-close').addEventListener('click', () => {
   document.getElementById('details-modal').classList.add('hidden');
 });
 
+document.getElementById('details-close-top').addEventListener('click', () => {
+  document.getElementById('details-modal').classList.add('hidden');
+});
+
 (async () => {
   try {
     initLiteGraph();
     await loadGraph();
+    updateSaveState();
     S.canvas.centerOnGraph();
   } catch (err) {
     console.error(err);

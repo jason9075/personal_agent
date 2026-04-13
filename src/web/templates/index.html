@@ -11,7 +11,9 @@
 <header id="app-header">
   <span class="logo">personal_agent</span>
   <span id="graph-badge" class="badge"></span>
+  <span id="save-state-badge" class="badge badge-warn hidden">Unsaved</span>
   <div class="header-actions">
+    <button id="btn-save-all" class="btn btn-primary">Save</button>
     <button id="btn-add-node" class="btn btn-primary">+ Node</button>
     <button id="btn-add-edge" class="btn btn-secondary" title="Click, then drag from one node to another">↗ Edge</button>
     <button id="btn-reload" class="btn btn-ghost">↺ Reload</button>
@@ -32,7 +34,7 @@
 
       <div id="node-editor" class="hidden">
         <section>
-          <h4>Node</h4>
+          <h4>Node <button id="ne-details" class="btn btn-secondary btn-sm inline-btn">Details</button></h4>
           <div class="kv-row"><span>ID</span><code id="ne-node-id"></code></div>
 
           <label class="field-label">Name</label>
@@ -142,8 +144,6 @@
         </section>
 
         <div class="btn-row">
-          <button id="ne-details" class="btn btn-secondary btn-sm">Details</button>
-          <button id="ne-save" class="btn btn-primary btn-sm">Save Node</button>
           <button id="ne-delete" class="btn btn-danger btn-sm">Delete</button>
         </div>
       </div>
@@ -205,84 +205,84 @@
 </div>
 
 <div id="details-modal" class="modal hidden" role="dialog" aria-modal="true">
-  <div class="modal-box modal-box-wide">
-    <h3>Node Details</h3>
+  <div class="modal-box modal-box-wide details-modal-shell">
+    <div class="details-hero">
+      <div>
+        <div class="details-kicker">Node Inspector</div>
+        <h3 id="dm-title">Node Details</h3>
+        <p class="details-subtitle">Inspect the prompt, execution lifecycle, and the final LLM input assembled for this node.</p>
+      </div>
+      <button id="details-close-top" class="btn btn-ghost">Close</button>
+    </div>
 
-    <div class="details-grid">
-      <section>
-        <h4>Identity</h4>
-        <div class="kv-row"><span>ID</span><code id="dm-node-id"></code></div>
-        <div class="kv-row"><span>Name</span><code id="dm-name"></code></div>
-        <div class="kv-row"><span>Type</span><code id="dm-node-type"></code></div>
-        <div class="kv-row"><span>Pass</span><code id="dm-pass-index"></code></div>
-        <div class="kv-row"><span>Flags</span><code id="dm-flags"></code></div>
-      </section>
+    <div class="details-summary">
+      <div class="summary-card">
+        <div class="summary-label">Node Name</div>
+        <div id="dm-name" class="summary-value"></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Pass Index</div>
+        <div id="dm-pass-index" class="summary-value"></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Timeout</div>
+        <div id="dm-timeout" class="summary-value"></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">System Prompt Path</div>
+        <div id="dm-system-prompt-path" class="summary-value summary-path"></div>
+      </div>
+    </div>
 
-      <section>
-        <h4>Lifecycle</h4>
-        <div class="kv-row"><span>Pre</span><code id="dm-pre-hook"></code></div>
-        <div class="kv-row"><span>Run</span><code id="dm-executor"></code></div>
-        <div class="kv-row"><span>Post</span><code id="dm-post-hook"></code></div>
-        <div class="kv-row"><span>Timeout</span><code id="dm-timeout"></code></div>
-        <div class="kv-row"><span>LLM Budget</span><code id="dm-max-llm"></code></div>
-      </section>
-
-      <section>
-        <h4>Routing</h4>
-        <div class="detail-block">
-          <div class="field-label">Route Label</div>
-          <pre id="dm-route-label"></pre>
+    <div class="details-layout">
+      <section class="details-panel">
+        <div class="panel-heading">
+          <h4>Node Description</h4>
+          <span class="panel-note">used by previous node / route</span>
         </div>
-        <div class="detail-block">
-          <div class="field-label">Route Description</div>
-          <pre id="dm-route-description"></pre>
+        <pre id="dm-description" class="viewer viewer-compact"></pre>
+
+        <div class="panel-heading">
+          <h4>System Prompt</h4>
         </div>
-        <div class="detail-block">
-          <div class="field-label">Router Patterns</div>
-          <pre id="dm-router-patterns"></pre>
+        <pre id="dm-system-prompt" class="viewer viewer-tall"></pre>
+
+        <div class="panel-heading">
+          <h4>Allowed Tools</h4>
         </div>
+        <pre id="dm-allowed-tools" class="viewer viewer-compact"></pre>
       </section>
 
-      <section>
-        <h4>System Prompt</h4>
-        <div class="detail-block">
-          <div class="field-label">Path</div>
-          <pre id="dm-system-prompt-path"></pre>
+      <section class="details-panel">
+        <div class="panel-heading">
+          <h4>Preview Prompt</h4>
+          <span class="panel-note">`{PREVIOUS_INPUT}` is shown as placeholder when applicable</span>
         </div>
-        <pre id="dm-system-prompt"></pre>
-      </section>
-
-      <section>
-        <h4>Prompt Template</h4>
-        <div class="detail-block">
-          <div class="field-label">Path</div>
-          <pre id="dm-prompt-template-path"></pre>
-        </div>
-        <pre id="dm-prompt-template"></pre>
-      </section>
-
-      <section>
-        <h4>Input Schema</h4>
-        <pre id="dm-input-schema"></pre>
-      </section>
-
-      <section>
-        <h4>Output Schema</h4>
-        <pre id="dm-output-schema"></pre>
-      </section>
-
-      <section>
-        <h4>Allowed Tools</h4>
-        <pre id="dm-allowed-tools"></pre>
-      </section>
-
-      <section>
-        <h4>Metadata</h4>
-        <pre id="dm-metadata"></pre>
+        <pre id="dm-preview-prompt" class="viewer viewer-xl"></pre>
       </section>
     </div>
 
-    <div class="btn-row" style="margin-top:16px">
+    <section class="details-panel details-panel-footer">
+        <details id="dm-execution-details">
+          <summary>Execution Code</summary>
+          <div class="execution-grid">
+            <div class="execution-block">
+              <div class="field-label">Pre Hook</div>
+              <pre class="viewer viewer-code code-viewer"><code id="dm-pre-hook-code"></code></pre>
+            </div>
+            <div class="execution-block">
+              <div class="field-label">Run</div>
+              <pre class="viewer viewer-code code-viewer"><code id="dm-run-code"></code></pre>
+            </div>
+            <div class="execution-block">
+              <div class="field-label">Post Hook</div>
+              <pre class="viewer viewer-code code-viewer"><code id="dm-post-hook-code"></code></pre>
+            </div>
+          </div>
+        </details>
+    </section>
+
+    <div class="btn-row" style="margin-top:18px">
       <button id="details-close" class="btn btn-primary">Close</button>
     </div>
   </div>

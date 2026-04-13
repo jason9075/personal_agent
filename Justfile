@@ -11,11 +11,15 @@ default:
 
 # Run the minimal private Discord bot
 bot:
+    find src skills config prompts -type f \( -name '*.py' -o -name '*.toml' -o -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.md' \) | grep -v __pycache__ | entr -r env -u PYTHONPATH python -m src.bot.bot
+
+# Run once without file watching
+bot-once:
     env -u PYTHONPATH python -m src.bot.bot
 
 # Watch Python files and restart the bot on change
 watch:
-    find src skills config -type f \( -name '*.py' -o -name '*.toml' -o -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.md' \) | grep -v __pycache__ | entr -r env -u PYTHONPATH python -m src.bot.bot
+    find src skills config prompts -type f \( -name '*.py' -o -name '*.toml' -o -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.md' \) | grep -v __pycache__ | entr -r env -u PYTHONPATH python -m src.bot.bot
 
 # Remove generated finance notes only
 clean:

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -26,12 +26,20 @@ from ..bot.workflow_db import (
 _THIS_DIR = Path(__file__).resolve().parent
 _TEMPLATES_DIR = _THIS_DIR / "templates"
 _STATIC_DIR = _THIS_DIR / "static"
-_REPO_ROOT = _THIS_DIR.parents[2]
+_REPO_ROOT = _THIS_DIR.parents[1]
 
 
 def create_app(workflow_db_path: Path) -> FastAPI:
     app = FastAPI(title="personal_agent workflow", docs_url="/docs")
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+    @app.middleware("http")
+    async def disable_cache(request: Request, call_next):  # type: ignore[unused-ignore]
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
@@ -164,6 +172,48 @@ def create_app(workflow_db_path: Path) -> FastAPI:
             "content": _safe_prompt_preview(path_str),
         })
 
+    @app.post("/api/node-details-preview")
+    async def node_details_preview_endpoint(body: dict[str, Any]) -> JSONResponse:
+        node = WorkflowNode(
+            id=str(body.get("id", "")),
+            name=str(body.get("name", "")),
+            description=str(body.get("description", "")),
+            node_type=str(body.get("node_type", "agent")),
+            pass_index=int(body.get("pass_index", 1)),
+            start_node=bool(body.get("start_node", False)),
+            enabled=bool(body.get("enabled", True)),
+            executor_path=str(body.get("executor_path", "")),
+            pre_hook_path=_nullable_str(body.get("pre_hook_path")),
+            post_hook_path=_nullable_str(body.get("post_hook_path")),
+            system_prompt_path=_nullable_str(body.get("system_prompt_path")),
+            prompt_template_path=_nullable_str(body.get("prompt_template_path")),
+            use_prev_output=bool(body.get("use_prev_output", True)),
+            allowed_tools=_as_string_list(body.get("allowed_tools", [])),
+            send_response=bool(body.get("send_response", True)),
+            input_schema=_as_json_obj(body.get("input_schema")),
+            output_schema=_as_json_obj(body.get("output_schema")),
+            timeout_seconds=int(body.get("timeout_seconds", 600)),
+            max_llm_calls=int(body.get("max_llm_calls", 0)),
+            route_label=_nullable_str(body.get("route_label")),
+            route_description=_nullable_str(body.get("route_description")),
+            router_mode=str(body.get("router_mode", "llm")),
+            router_patterns=_as_string_list(body.get("router_patterns", [])),
+            metadata=_as_json_dict(body.get("metadata")),
+        )
+        hook_info = detect_node_hooks(node, _REPO_ROOT)
+        resolved_tools = _resolve_node_tools(node, workflow_db_path)
+        return JSONResponse({
+            "system_prompt_path": node.system_prompt_path,
+            "system_prompt": _safe_prompt_preview(node.system_prompt_path),
+            "preview_prompt": _build_preview_prompt(node),
+            "resolved_tools": resolved_tools,
+            "execution_code": {
+                "pre_hook": _read_code_file(hook_info.get("effective_pre_hook_path")),
+                "run": _read_code_file(hook_info.get("effective_executor_path")),
+                "post_hook": _read_code_file(hook_info.get("effective_post_hook_path")),
+            },
+        })
+
     return app
 
 
@@ -253,3 +303,49 @@ def _safe_prompt_preview(path_str: str | None) -> str:
         return load_prompt_path(path_str)
     except RuntimeError as exc:
         return f"[prompt load error] {exc}"
+
+
+def _build_preview_prompt(node: WorkflowNode) -> str:
+    system_prompt = _safe_prompt_preview(node.system_prompt_path).strip()
+    template = _safe_prompt_preview(node.prompt_template_path).strip() if node.prompt_template_path else ""
+    parts: list[str] = []
+    if system_prompt:
+        parts.append(system_prompt)
+    parts.append("----")
+    parts.append(f"Node Name: {node.name or '(empty)'}")
+    parts.append(f"Node Description: {node.description or '(empty)'}")
+    if node.use_prev_output:
+        parts.append("PREVIOUS_INPUT:\n{PREVIOUS_INPUT}")
+    if node.allowed_tools:
+        parts.append("TOOLS:\n" + "\n".join(f"- {tool}" for tool in node.allowed_tools))
+    if template:
+        parts.append("TEMPLATE:\n" + template)
+    return "\n\n".join(parts).strip()
+
+
+def _read_code_file(path_str: Any) -> str:
+    if not path_str:
+        return "(none)"
+    path = _REPO_ROOT / str(path_str)
+    if not path.exists():
+        return f"(missing) {path_str}"
+    return path.read_text(encoding="utf-8")
+
+
+def _resolve_node_tools(node: WorkflowNode, workflow_db_path: Path) -> list[str]:
+    if node.allowed_tools:
+        return node.allowed_tools
+    if node.node_type != "router":
+        return []
+
+    graph = load_workflow_graph(workflow_db_path)
+    candidates = graph.candidate_targets(node.id)
+    resolved: list[str] = []
+    for candidate in candidates:
+        label = candidate.route_label or candidate.name or candidate.id
+        description = candidate.route_description or candidate.description or ""
+        text = f"{candidate.id}: {label}"
+        if description:
+            text += f" — {description}"
+        resolved.append(text)
+    return resolved
