@@ -46,7 +46,8 @@ def main() -> int:
 
     # --args-json path: channel_id may be embedded in payload
     channel_id = str(payload.pop("channel_id", "")).strip()
-    print(execute_schedule_action(payload, channel_id=channel_id))
+    reply = execute_schedule_action(payload, channel_id=channel_id)
+    print(json.dumps({"kind": "reply", "reply": reply}, ensure_ascii=False))
     return 0
 
 

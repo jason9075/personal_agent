@@ -24,7 +24,7 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "kind": "llm_request",
+                "kind": "infer",
                 "response_mode": "decision",
                 "run_output": run_output,
                 "metadata": {

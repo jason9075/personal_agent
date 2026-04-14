@@ -44,7 +44,7 @@ def main() -> int:
         )
         configs = load_configs(cli_args.source_id)
         if len(configs) != 1:
-            print("請先指定單一財經來源，再執行報告生成。")
+            print(json.dumps({"kind": "reply", "reply": "請先指定單一財經來源，再執行報告生成。"}, ensure_ascii=False))
             return 0
 
         config = configs[0]
@@ -58,15 +58,15 @@ def main() -> int:
         )
         existing_message = str(prepared.get("existing_message", "")).strip()
         if existing_message:
-            print(existing_message)
+            print(json.dumps({"kind": "reply", "reply": existing_message}, ensure_ascii=False))
             return 0
 
         logger.info("Prepared finance-report llm request source=%s target_date=%s", config.source.source_id, prepared["target_date"])
         print(
             json.dumps(
                 {
-                    "kind": "llm_request",
-                    "response_mode": "text",
+                    "kind": "infer",
+                    "response_mode": "passthrough",
                     "run_output": str(prepared["run_output"]),
                     "task_prompt": str(prepared["task_prompt"]),
                     "output_path": str(prepared["note_path"]),

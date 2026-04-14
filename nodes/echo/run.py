@@ -22,7 +22,7 @@ def main() -> int:
         print("(empty echo)", file=sys.stderr)
         return 1
 
-    print(text)
+    print(json.dumps({"kind": "reply", "reply": text}, ensure_ascii=False))
     return 0
 
 

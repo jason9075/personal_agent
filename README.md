@@ -32,6 +32,36 @@ Important rules:
 - Hook files are optional. The web UI scans for sibling `pre_hook.py` / `run.py` / `post_hook.py` and shows lifecycle badges.
 - Prompt text is stored in repo `.md` files. The DB stores prompt file paths such as `nodes/intent-router/system.md`, and the engine loads them at runtime.
 
+## Node stdout protocol
+
+All node executors must output a JSON object to stdout. Two `kind` values are supported:
+
+**Direct reply** — no LLM call:
+```json
+{"kind": "reply", "reply": "text sent back to Discord"}
+```
+
+**LLM infer** — engine calls the LLM and handles its output:
+```json
+{
+  "kind": "infer",
+  "response_mode": "decision",
+  "run_output": "...",
+  "default_args": {},
+  "metadata": { "fallback_reply": "..." }
+}
+```
+
+| field | values | meaning |
+|-------|--------|---------|
+| `kind` | `"reply"` / `"infer"` | whether to call the LLM |
+| `response_mode` | `"decision"` / `"passthrough"` | `"decision"`: LLM must return routing JSON (`reply` or `use_next_node`); `"passthrough"`: LLM output is used directly as the reply |
+| `run_output` | any string | context passed to the LLM (tool results, data summaries, etc.) |
+| `default_args` | object | args pre-filled into `use_next_node`; LLM-returned `args` override these |
+| `metadata.fallback_reply` | string | reply used when the LLM call fails |
+
+`kind` and `response_mode` are intentionally separate: `kind` controls **whether** the LLM is invoked; `response_mode` controls **what to do with** the LLM output. Non-JSON or unknown `kind` values raise a `RuntimeError` at runtime.
+
 ## Key modules
 
 - `src/bot/engine.py` — node execution loop and decision-node handoff behavior

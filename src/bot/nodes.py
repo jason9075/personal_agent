@@ -36,15 +36,22 @@ def parse_llm_envelope(action_result: NodeActionResult) -> NodeLlmEnvelope | Non
         return None
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"node '{action_result.node_id}' stdout is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"node '{action_result.node_id}' stdout must be a JSON object")
+    kind = str(parsed.get("kind", "")).strip()
+    if kind == "reply":
         return None
-    if not isinstance(parsed, dict) or parsed.get("kind") != "llm_request":
-        return None
+    if kind != "infer":
+        raise RuntimeError(f"node '{action_result.node_id}' unknown kind: {kind!r}")
     default_args = parsed.get("default_args", {})
     metadata = parsed.get("metadata", {})
     return NodeLlmEnvelope(
         run_output=str(parsed.get("run_output", "")).strip(),
-        response_mode=str(parsed.get("response_mode", "text")).strip() or "text",
+        response_mode=str(parsed.get("response_mode", "passthrough")).strip() or "passthrough",
         task_prompt=str(parsed.get("task_prompt", "")).strip(),
         default_args=default_args if isinstance(default_args, dict) else {},
         output_path=str(parsed.get("output_path", "")).strip(),
@@ -54,10 +61,19 @@ def parse_llm_envelope(action_result: NodeActionResult) -> NodeLlmEnvelope | Non
 
 def format_direct_node_reply(action_result: NodeActionResult) -> str:
     """Return a direct Discord reply without additional synthesis."""
-    output = action_result.stdout.strip() or action_result.stderr.strip() or "(no output)"
     if action_result.returncode != 0:
+        output = action_result.stdout.strip() or action_result.stderr.strip() or "(no output)"
         return f"節點執行失敗：\n```text\n{output[:3500]}\n```"
-    return output[:3500]
+    raw = action_result.stdout.strip()
+    if not raw:
+        return "(no output)"
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and parsed.get("kind") == "reply":
+            return str(parsed.get("reply", "")).strip()
+    except json.JSONDecodeError:
+        pass
+    return raw[:3500]
 
 
 def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
