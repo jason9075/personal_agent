@@ -105,7 +105,6 @@ def _execute_node(
             "id": candidate.id,
             "name": candidate.name,
             "description": candidate.description or candidate.name,
-            "model_name": candidate.model_name,
         }
         for candidate in graph.candidate_targets(node.id)
         if candidate.enabled

@@ -14,12 +14,9 @@ def main() -> int:
     payload: dict = json.loads(sys.argv[idx + 1])
     message = str(payload.get("message", "")).strip()
     recent_context = str(payload.get("recent_context", "")).strip()
-    next_nodes = payload.get("next_nodes", [])
-
     run_output = json.dumps(
         {
             "recent_context": recent_context or "",
-            "reachable_next_nodes": next_nodes,
         },
         ensure_ascii=False,
         indent=2,

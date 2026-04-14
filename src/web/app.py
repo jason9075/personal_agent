@@ -317,6 +317,10 @@ def _build_preview_prompt(node: WorkflowNode, reachable_nodes_json: str) -> str:
     return compose_prompt(engine_prompt, node_prompt, runtime_context)
 
 
+def _build_run_output_preview(node: WorkflowNode) -> str:
+    return "{RUN_OUTPUT}"
+
+
 def _read_code_file(path_str: Any) -> str:
     if not path_str:
         return "(none)"
@@ -349,7 +353,6 @@ def _build_reachable_nodes_preview(node: WorkflowNode, workflow_db_path: Path) -
             "id": candidate.id,
             "name": candidate.name,
             "description": candidate.description or candidate.name,
-            "model_name": candidate.model_name,
         }
         for candidate in graph.candidate_targets(node.id)
         if candidate.enabled
