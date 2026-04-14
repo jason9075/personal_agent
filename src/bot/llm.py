@@ -84,6 +84,18 @@ def run_codex_request(request: LlmRequest, repo_root: Path) -> str:
     return response
 
 
+def unwrap_decision_reply(raw: str) -> str:
+    """If LLM wrapped output in {"decision":"reply","reply":"..."}, extract the reply field."""
+    text = raw.strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and parsed.get("decision") == "reply" and "reply" in parsed:
+            return str(parsed["reply"]).strip()
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return text
+
+
 def parse_json_response(raw: str, fallback_reply: str) -> dict:
     text = raw.strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.DOTALL).strip()

@@ -10,7 +10,7 @@ from pathlib import Path
 import discord
 
 from .logging_utils import get_logger
-from .schedule_db import ScheduledJob, list_jobs, set_job_run_result
+from .schedule_db import ScheduledJob, delete_job, list_jobs, set_job_run_result
 
 
 SCHEDULER_POLL_SECONDS = 30
@@ -63,6 +63,12 @@ class FinanceScheduler:
     async def _run_job(self, job: ScheduledJob, now: datetime) -> None:
         logger = get_logger()
         logger.info("Scheduler running job_id=%s name=%s", job.id, job.name)
+
+        if job.channel_id:
+            channel = self.client.get_channel(int(job.channel_id))
+            if channel is not None:
+                await channel.send(f"排程 `{job.name}` 開始執行，處理中…")
+
         cmd = ["python", "nodes/finance-report/run.py", "--workers", str(job.workers)]
         if job.source_id:
             cmd.extend(["--source", job.source_id])
@@ -94,6 +100,10 @@ class FinanceScheduler:
             status=status,
             message=output[:2000],
         )
+
+        if job.run_once:
+            delete_job(self.db_path, job.id)
+            logger.info("Deleted run_once job_id=%s after execution", job.id)
 
         if not job.channel_id:
             return

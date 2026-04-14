@@ -157,6 +157,7 @@ def create_app(workflow_db_path: Path, schedule_db_path: Path) -> FastAPI:
                 source_id=str(body.get("source_id", "")),
                 workers=int(body.get("workers", 4)),
                 channel_id=str(body.get("channel_id", "")),
+                run_once=bool(body.get("run_once", False)),
             )
         except KeyError as exc:
             raise HTTPException(status_code=422, detail=f"missing field: {exc}")
@@ -176,6 +177,7 @@ def create_app(workflow_db_path: Path, schedule_db_path: Path) -> FastAPI:
                 workers=int(body["workers"]) if "workers" in body else None,
                 channel_id=str(body["channel_id"]) if "channel_id" in body else None,
                 enabled=bool(body["enabled"]) if "enabled" in body else None,
+                run_once=bool(body["run_once"]) if "run_once" in body else None,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
@@ -250,6 +252,7 @@ def _job_to_dict(job: ScheduledJob) -> dict[str, Any]:
         "workers": job.workers,
         "channel_id": job.channel_id,
         "enabled": job.enabled,
+        "run_once": job.run_once,
         "last_run_at": job.last_run_at,
         "last_status": job.last_status,
         "last_message": job.last_message,

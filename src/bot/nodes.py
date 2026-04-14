@@ -88,9 +88,10 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
         for job in jobs:
             source_label = job.source_id or "(all)"
             enabled = "enabled" if job.enabled else "disabled"
+            run_once_label = " | run_once" if job.run_once else ""
             last = f" | last={job.last_run_at} {job.last_status}".rstrip() if job.last_run_at or job.last_status else ""
             lines.append(
-                f"- #{job.id} {job.name} | cron={job.cron_expr} | source={source_label} | workers={job.workers} | {enabled}{last}"
+                f"- #{job.id} {job.name} | cron={job.cron_expr} | source={source_label} | workers={job.workers} | {enabled}{run_once_label}{last}"
             )
         return "\n".join(lines)
 
@@ -100,6 +101,7 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
         source_id = str(args.get("source", "")).strip()
         workers = int(args.get("workers", 4))
         target_channel = str(args.get("channel", "") or args.get("channel_id", "")).strip() or channel_id
+        run_once = bool(args.get("run_once", False))
         if not name or not cron_expr:
             raise RuntimeError("add requires name=<job_name> and cron=\"m h dom mon dow\"")
         parse_cron(cron_expr)
@@ -110,8 +112,10 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
             source_id=source_id,
             workers=workers,
             channel_id=target_channel,
+            run_once=run_once,
         )
-        return f"已新增排程 #{job.id} `{job.name}`：cron=`{job.cron_expr}` source=`{job.source_id or '(all)'}` workers={job.workers}"
+        kind = "一次性排程" if job.run_once else "排程"
+        return f"已新增{kind} #{job.id} `{job.name}`：cron=`{job.cron_expr}` source=`{job.source_id or '(all)'}` workers={job.workers}"
 
     if action in {"update", "enable", "disable", "delete"}:
         job_id = int(args.get("id", 0))
@@ -135,6 +139,7 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
             source_id = ""
         workers = int(args["workers"]) if "workers" in args else None
         target_channel = str(args.get("channel", "") or args.get("channel_id", "")).strip() or None
+        run_once = bool(args["run_once"]) if "run_once" in args else None
         if cron_expr:
             parse_cron(cron_expr)
         job = update_job(
@@ -145,6 +150,7 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
             source_id=source_id,
             workers=workers,
             channel_id=target_channel,
+            run_once=run_once,
         )
         return f"已更新排程 #{job.id} `{job.name}`：cron=`{job.cron_expr}` source=`{job.source_id or '(all)'}` workers={job.workers}"
 

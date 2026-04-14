@@ -15,6 +15,7 @@ class ScheduledJob:
     workers: int
     channel_id: str
     enabled: bool
+    run_once: bool
     last_run_at: str
     last_status: str
     last_message: str
@@ -33,12 +34,17 @@ def ensure_db(db_path: Path) -> None:
                 workers INTEGER NOT NULL DEFAULT 4,
                 channel_id TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
+                run_once INTEGER NOT NULL DEFAULT 0,
                 last_run_at TEXT NOT NULL DEFAULT '',
                 last_status TEXT NOT NULL DEFAULT '',
                 last_message TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        try:
+            conn.execute("ALTER TABLE finance_schedule_jobs ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
         conn.commit()
 
 
@@ -47,7 +53,7 @@ def list_jobs(db_path: Path) -> list[ScheduledJob]:
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT id, name, cron_expr, source_id, workers, channel_id, enabled,
+            SELECT id, name, cron_expr, source_id, workers, channel_id, enabled, run_once,
                    last_run_at, last_status, last_message
             FROM finance_schedule_jobs
             ORDER BY id ASC
@@ -64,15 +70,16 @@ def create_job(
     source_id: str,
     workers: int,
     channel_id: str,
+    run_once: bool = False,
 ) -> ScheduledJob:
     ensure_db(db_path)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT INTO finance_schedule_jobs (name, cron_expr, source_id, workers, channel_id, enabled)
-            VALUES (?, ?, ?, ?, ?, 1)
+            INSERT INTO finance_schedule_jobs (name, cron_expr, source_id, workers, channel_id, enabled, run_once)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
             """,
-            (name, cron_expr, source_id, workers, channel_id),
+            (name, cron_expr, source_id, workers, channel_id, 1 if run_once else 0),
         )
         conn.commit()
         job_id = int(cursor.lastrowid)
@@ -84,7 +91,7 @@ def get_job(db_path: Path, job_id: int) -> ScheduledJob:
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
             """
-            SELECT id, name, cron_expr, source_id, workers, channel_id, enabled,
+            SELECT id, name, cron_expr, source_id, workers, channel_id, enabled, run_once,
                    last_run_at, last_status, last_message
             FROM finance_schedule_jobs
             WHERE id = ?
@@ -106,6 +113,7 @@ def update_job(
     workers: int | None = None,
     channel_id: str | None = None,
     enabled: bool | None = None,
+    run_once: bool | None = None,
 ) -> ScheduledJob:
     ensure_db(db_path)
     current = get_job(db_path, job_id)
@@ -113,7 +121,7 @@ def update_job(
         conn.execute(
             """
             UPDATE finance_schedule_jobs
-            SET name = ?, cron_expr = ?, source_id = ?, workers = ?, channel_id = ?, enabled = ?
+            SET name = ?, cron_expr = ?, source_id = ?, workers = ?, channel_id = ?, enabled = ?, run_once = ?
             WHERE id = ?
             """,
             (
@@ -123,6 +131,7 @@ def update_job(
                 current.workers if workers is None else workers,
                 current.channel_id if channel_id is None else channel_id,
                 1 if (current.enabled if enabled is None else enabled) else 0,
+                1 if (current.run_once if run_once is None else run_once) else 0,
                 job_id,
             ),
         )
@@ -169,7 +178,8 @@ def _row_to_job(row: tuple) -> ScheduledJob:
         workers=int(row[4]),
         channel_id=str(row[5]),
         enabled=bool(row[6]),
-        last_run_at=str(row[7] or ""),
-        last_status=str(row[8] or ""),
-        last_message=str(row[9] or ""),
+        run_once=bool(row[7]),
+        last_run_at=str(row[8] or ""),
+        last_status=str(row[9] or ""),
+        last_message=str(row[10] or ""),
     )

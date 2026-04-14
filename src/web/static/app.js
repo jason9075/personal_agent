@@ -994,6 +994,7 @@ function renderCronTable(jobs) {
       <td class="dim">${job.workers}</td>
       <td class="mono">${escapeHtml(job.channel_id || '—')}</td>
       <td>${enabledBadge}</td>
+      <td>${job.run_once ? '<span class="status-ok">●</span>' : '<span class="dim">—</span>'}</td>
       <td class="dim">${escapeHtml(job.last_run_at || '—')}</td>
       <td><span class="${statusClass}">${escapeHtml(job.last_status || '—')}</span></td>
       <td>
@@ -1023,6 +1024,7 @@ function openCronModal(jobId = null) {
       document.getElementById('cj-workers').value = job.workers;
       document.getElementById('cj-channel-id').value = job.channel_id || '';
       document.getElementById('cj-enabled').checked = job.enabled;
+      document.getElementById('cj-run-once').checked = job.run_once || false;
       document.getElementById('cron-modal').classList.remove('hidden');
     });
   } else {
@@ -1033,6 +1035,7 @@ function openCronModal(jobId = null) {
     document.getElementById('cj-workers').value = '4';
     document.getElementById('cj-channel-id').value = '';
     document.getElementById('cj-enabled').checked = true;
+    document.getElementById('cj-run-once').checked = false;
     document.getElementById('cron-modal').classList.remove('hidden');
   }
 }
@@ -1069,6 +1072,7 @@ document.getElementById('cj-confirm').addEventListener('click', async () => {
     workers: parseInt(document.getElementById('cj-workers').value, 10) || 4,
     channel_id: document.getElementById('cj-channel-id').value.trim(),
     enabled: document.getElementById('cj-enabled').checked,
+    run_once: document.getElementById('cj-run-once').checked,
   };
   try {
     if (cronEditingId !== null) {

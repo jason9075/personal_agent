@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .llm import LlmRequest, parse_json_response, run_codex_request
+from .llm import LlmRequest, parse_json_response, run_codex_request, unwrap_decision_reply
 from .logging_utils import get_logger
 from .nodes import NodeActionResult, format_direct_node_reply, parse_llm_envelope
 from .workflow_db import WorkflowGraph, WorkflowNode, load_workflow_graph
@@ -138,16 +138,17 @@ def _execute_node(
             else:
                 raise
         else:
+            content = unwrap_decision_reply(llm_response)
             if envelope.output_path:
                 output_path = repo_root / envelope.output_path
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text(llm_response.rstrip() + "\n", encoding="utf-8")
+                output_path.write_text(content.rstrip() + "\n", encoding="utf-8")
             codex_output_path = envelope.metadata.get("codex_output_path", "").strip()
             if codex_output_path:
                 output_path = repo_root / codex_output_path
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text(llm_response.rstrip() + "\n", encoding="utf-8")
-            output_text = llm_response.strip()
+                output_path.write_text(content.rstrip() + "\n", encoding="utf-8")
+            output_text = content
             if envelope.response_mode == "decision":
                 fallback_reply = envelope.metadata.get("fallback_reply", "目前無法完成判斷，請稍後再試。")
                 parsed = parse_json_response(llm_response, fallback_reply)

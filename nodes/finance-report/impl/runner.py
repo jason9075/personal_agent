@@ -8,7 +8,7 @@ from threading import Semaphore
 
 from dotenv import load_dotenv
 
-from src.bot.llm import LlmRequest, run_codex_request
+from src.bot.llm import LlmRequest, run_codex_request, unwrap_decision_reply
 
 from .analyze import build_analysis_run_output, build_analysis_task_prompt, save_markdown_outputs
 from .cli import parse_cli_args
@@ -102,7 +102,7 @@ def _process_source(
         logger.info("Waiting for Codex slot")
         with codex_slots:
             logger.info("Starting analysis stage")
-            markdown = run_codex_request(
+            raw = run_codex_request(
                 LlmRequest(
                     node_id="finance-report",
                     model_name=config.codex_model or "gpt-5.4",
@@ -117,6 +117,7 @@ def _process_source(
                 ),
                 repo_root,
             ).strip()
+            markdown = unwrap_decision_reply(raw)
             save_markdown_outputs(
                 markdown,
                 note_path=Path(str(prepared["note_path"])),
