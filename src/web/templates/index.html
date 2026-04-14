@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>personal_agent — Workflow</title>
+  <title>personal_agent</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E🧠%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css">
   <link rel="stylesheet" href="/static/app.css">
@@ -11,96 +11,147 @@
 <body>
 <header id="app-header">
   <span class="logo">personal_agent</span>
-  <span id="graph-badge" class="badge"></span>
-  <span id="save-state-badge" class="badge badge-warn hidden">Unsaved</span>
-  <div class="header-actions">
-    <button id="btn-engine-prompt" class="btn btn-secondary">Engine Prompt</button>
-    <button id="btn-save-all" class="btn btn-primary">Save</button>
-    <button id="btn-add-node" class="btn btn-primary">+ Node</button>
-    <button id="btn-add-edge" class="btn btn-secondary" title="Click, then drag from one node to another">↗ Edge</button>
-    <button id="btn-reload" class="btn btn-ghost">↺ Reload</button>
-  </div>
 </header>
 
-<div id="layout">
-  <div id="canvas-wrap">
-    <canvas id="lg-canvas"></canvas>
-  </div>
+<div id="app-body">
+  <nav id="side-nav">
+    <button id="nav-toggle" class="nav-toggle" title="Toggle sidebar">‹</button>
+    <button class="nav-item active" data-page="dag">
+      <span class="nav-icon">⬡</span>
+      <span class="nav-label">DAG</span>
+    </button>
+    <button class="nav-item" data-page="cron">
+      <span class="nav-icon">⏰</span>
+      <span class="nav-label">Cron</span>
+    </button>
+  </nav>
 
-  <aside id="side-panel">
-    <div id="tab-editor" class="tab-body">
-      <div id="editor-hint" class="panel-hint">
-        <p>Select a node to edit its workflow settings.</p>
-        <p class="muted">Use the graph to add or remove allowed connections between nodes.</p>
+  <div id="pages">
+    <!-- DAG Page -->
+    <div id="page-dag" class="page">
+      <div id="dag-toolbar">
+        <span id="graph-badge" class="badge"></span>
+        <span id="save-state-badge" class="badge badge-warn hidden">Unsaved</span>
+        <div class="toolbar-spacer"></div>
+        <button id="btn-engine-prompt" class="btn btn-secondary">Engine Prompt</button>
+        <button id="btn-save-all" class="btn btn-primary">Save</button>
+        <button id="btn-add-node" class="btn btn-primary">+ Node</button>
+        <button id="btn-add-edge" class="btn btn-secondary" title="Click, then drag from one node to another">↗ Edge</button>
+        <button id="btn-reload" class="btn btn-ghost">↺ Reload</button>
       </div>
+      <div id="layout">
+        <div id="canvas-wrap">
+          <canvas id="lg-canvas"></canvas>
+        </div>
 
-      <div id="node-editor" class="hidden">
-        <section>
-          <h4>Node <button id="ne-details" class="btn btn-secondary btn-sm inline-btn">Details</button></h4>
-          <div class="kv-row"><span>ID</span><code id="ne-node-id"></code></div>
+        <aside id="side-panel">
+          <div id="tab-editor" class="tab-body">
+            <div id="editor-hint" class="panel-hint">
+              <p>Select a node to edit its workflow settings.</p>
+              <p class="muted">Use the graph to add or remove allowed connections between nodes.</p>
+            </div>
 
-          <label class="field-label">Name</label>
-          <input type="text" id="ne-name">
+            <div id="node-editor" class="hidden">
+              <section>
+                <h4>Node <button id="ne-details" class="btn btn-secondary btn-sm inline-btn">Details</button></h4>
+                <div class="kv-row"><span>ID</span><code id="ne-node-id"></code></div>
 
-          <label class="field-label">Description</label>
-          <textarea id="ne-description" rows="3"></textarea>
+                <label class="field-label">Name</label>
+                <input type="text" id="ne-name">
 
-          <label class="field-label">Model</label>
-          <select id="ne-model-name">
-            <option value="gpt-5.4">gpt-5.4</option>
-            <option value="gpt-5.4-mini">gpt-5.4-mini</option>
-            <option value="gpt-5.3-codex">gpt-5.3-codex</option>
-            <option value="gpt-5.2">gpt-5.2</option>
-          </select>
+                <label class="field-label">Description</label>
+                <textarea id="ne-description" rows="3"></textarea>
 
-          <div class="kv-row">
-            <span>Enabled</span>
-            <label class="toggle"><input type="checkbox" id="ne-enabled"><span class="slider"></span></label>
+                <label class="field-label">Model</label>
+                <select id="ne-model-name">
+                  <option value="gpt-5.4">gpt-5.4</option>
+                  <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+                  <option value="gpt-5.3-codex">gpt-5.3-codex</option>
+                  <option value="gpt-5.2">gpt-5.2</option>
+                </select>
+
+                <div class="kv-row">
+                  <span>Enabled</span>
+                  <label class="toggle"><input type="checkbox" id="ne-enabled"><span class="slider"></span></label>
+                </div>
+                <div class="kv-row">
+                  <span>Start Node</span>
+                  <label class="toggle"><input type="checkbox" id="ne-start-node"><span class="slider"></span></label>
+                </div>
+                <div class="kv-row">
+                  <span>Use Prev</span>
+                  <label class="toggle"><input type="checkbox" id="ne-use-prev-output"><span class="slider"></span></label>
+                </div>
+              </section>
+
+              <hr>
+
+              <section>
+                <h4>Execution</h4>
+                <label class="field-label">Executor Path <span class="muted">(relative to repo root)</span></label>
+                <input type="text" id="ne-executor-path" spellcheck="false">
+
+                <label class="field-label">Pre Hook Path <span class="muted">(optional)</span></label>
+                <input type="text" id="ne-pre-hook-path" spellcheck="false">
+
+                <label class="field-label">Post Hook Path <span class="muted">(optional)</span></label>
+                <input type="text" id="ne-post-hook-path" spellcheck="false">
+
+                <label class="field-label">Node Prompt Path <span class="muted">(repo-relative .md)</span></label>
+                <input type="text" id="ne-node-prompt-path" spellcheck="false">
+
+                <label class="field-label">Timeout Seconds</label>
+                <input type="number" id="ne-timeout-seconds" min="1">
+
+                <div class="hint-box">
+                  <div class="kv-row"><span>PRE</span><code id="ne-hook-pre"></code></div>
+                  <div class="kv-row"><span>RUN</span><code id="ne-hook-run"></code></div>
+                  <div class="kv-row"><span>POST</span><code id="ne-hook-post"></code></div>
+                </div>
+              </section>
+
+              <div class="btn-row">
+                <button id="ne-delete" class="btn btn-danger btn-sm">Delete</button>
+              </div>
+            </div>
           </div>
-          <div class="kv-row">
-            <span>Start Node</span>
-            <label class="toggle"><input type="checkbox" id="ne-start-node"><span class="slider"></span></label>
-          </div>
-          <div class="kv-row">
-            <span>Use Prev</span>
-            <label class="toggle"><input type="checkbox" id="ne-use-prev-output"><span class="slider"></span></label>
-          </div>
-        </section>
+        </aside>
+      </div>
+    </div>
 
-        <hr>
-
-        <section>
-          <h4>Execution</h4>
-          <label class="field-label">Executor Path <span class="muted">(relative to repo root)</span></label>
-          <input type="text" id="ne-executor-path" spellcheck="false">
-
-          <label class="field-label">Pre Hook Path <span class="muted">(optional)</span></label>
-          <input type="text" id="ne-pre-hook-path" spellcheck="false">
-
-          <label class="field-label">Post Hook Path <span class="muted">(optional)</span></label>
-          <input type="text" id="ne-post-hook-path" spellcheck="false">
-
-          <label class="field-label">Node Prompt Path <span class="muted">(repo-relative .md)</span></label>
-          <input type="text" id="ne-node-prompt-path" spellcheck="false">
-
-          <label class="field-label">Timeout Seconds</label>
-          <input type="number" id="ne-timeout-seconds" min="1">
-
-          <div class="hint-box">
-            <div class="kv-row"><span>PRE</span><code id="ne-hook-pre"></code></div>
-            <div class="kv-row"><span>RUN</span><code id="ne-hook-run"></code></div>
-            <div class="kv-row"><span>POST</span><code id="ne-hook-post"></code></div>
-          </div>
-        </section>
-
-        <div class="btn-row">
-          <button id="ne-delete" class="btn btn-danger btn-sm">Delete</button>
+    <!-- Cron Page -->
+    <div id="page-cron" class="page hidden">
+      <div id="cron-content">
+        <div class="cron-toolbar">
+          <button id="btn-add-job" class="btn btn-primary">+ Job</button>
+          <button id="btn-reload-cron" class="btn btn-ghost">↺ Reload</button>
+        </div>
+        <div id="cron-table-wrap">
+          <table id="cron-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Cron Expr</th>
+                <th>Source ID</th>
+                <th>Workers</th>
+                <th>Channel ID</th>
+                <th>Enabled</th>
+                <th>Last Run</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="cron-table-body"></tbody>
+          </table>
+          <div id="cron-empty" class="cron-empty hidden">No scheduled jobs yet. Click <strong>+ Job</strong> to create one.</div>
         </div>
       </div>
     </div>
-  </aside>
+  </div>
 </div>
 
+<!-- Add Node Modal -->
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-box">
     <h3>Add Node</h3>
@@ -126,6 +177,7 @@
   </div>
 </div>
 
+<!-- Node Details Modal -->
 <div id="details-modal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-box modal-box-wide details-modal-shell">
     <div class="details-hero">
@@ -217,8 +269,7 @@
   </div>
 </div>
 
-<div id="toast" aria-live="polite"></div>
-
+<!-- Engine Prompt Modal -->
 <div id="engine-prompt-modal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-box modal-box-wide">
     <div class="details-hero">
@@ -238,6 +289,40 @@
     </div>
   </div>
 </div>
+
+<!-- Cron Job Modal -->
+<div id="cron-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box cron-modal-box">
+    <h3 id="cron-modal-title">Add Job</h3>
+
+    <label class="field-label">Name</label>
+    <input type="text" id="cj-name" spellcheck="false">
+
+    <label class="field-label">Cron Expression</label>
+    <input type="text" id="cj-cron-expr" spellcheck="false" placeholder="e.g. 0 9 * * 1-5">
+
+    <label class="field-label">Source ID</label>
+    <input type="text" id="cj-source-id" spellcheck="false">
+
+    <label class="field-label">Workers</label>
+    <input type="number" id="cj-workers" min="1" value="4">
+
+    <label class="field-label">Channel ID</label>
+    <input type="text" id="cj-channel-id" spellcheck="false">
+
+    <div class="kv-row" style="margin-top:12px">
+      <span>Enabled</span>
+      <label class="toggle"><input type="checkbox" id="cj-enabled" checked><span class="slider"></span></label>
+    </div>
+
+    <div class="btn-row" style="margin-top:16px">
+      <button id="cj-confirm" class="btn btn-primary">Save</button>
+      <button id="cj-cancel" class="btn btn-ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" aria-live="polite"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.min.js"></script>
 <script src="/static/app.js"></script>

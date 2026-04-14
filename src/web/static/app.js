@@ -932,6 +932,171 @@ document.getElementById('engine-prompt-modal').addEventListener('click', event =
   }
 });
 
+// ── Nav ──────────────────────────────────────────────────────────────────────
+
+const PAGES = ['dag', 'cron'];
+
+function switchPage(pageId) {
+  PAGES.forEach(id => {
+    document.getElementById(`page-${id}`).classList.toggle('hidden', id !== pageId);
+    document.querySelector(`.nav-item[data-page="${id}"]`).classList.toggle('active', id === pageId);
+  });
+
+  if (pageId === 'cron') loadCronJobs();
+  if (pageId === 'dag') fitCanvas();
+}
+
+document.querySelectorAll('.nav-item').forEach(btn => {
+  btn.addEventListener('click', () => switchPage(btn.dataset.page));
+});
+
+document.getElementById('nav-toggle').addEventListener('click', () => {
+  const nav = document.getElementById('side-nav');
+  const collapsed = nav.classList.toggle('collapsed');
+  document.getElementById('nav-toggle').textContent = collapsed ? '›' : '‹';
+  fitCanvas();
+});
+
+// ── Cron Jobs ─────────────────────────────────────────────────────────────────
+
+let cronEditingId = null;
+
+async function loadCronJobs() {
+  try {
+    const jobs = await GET('/api/schedule/jobs');
+    renderCronTable(jobs);
+  } catch (err) {
+    toast(`Failed to load jobs: ${err.message}`, 'err');
+  }
+}
+
+function renderCronTable(jobs) {
+  const tbody = document.getElementById('cron-table-body');
+  const empty = document.getElementById('cron-empty');
+
+  if (!jobs.length) {
+    tbody.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+
+  tbody.innerHTML = jobs.map(job => {
+    const statusClass = job.last_status === 'ok' ? 'status-ok' : job.last_status ? 'status-err' : '';
+    const enabledBadge = job.enabled
+      ? '<span class="status-ok">●</span>'
+      : '<span class="status-err">●</span>';
+    return `<tr>
+      <td class="dim">${job.id}</td>
+      <td>${escapeHtml(job.name)}</td>
+      <td class="mono">${escapeHtml(job.cron_expr)}</td>
+      <td class="mono">${escapeHtml(job.source_id || '—')}</td>
+      <td class="dim">${job.workers}</td>
+      <td class="mono">${escapeHtml(job.channel_id || '—')}</td>
+      <td>${enabledBadge}</td>
+      <td class="dim">${escapeHtml(job.last_run_at || '—')}</td>
+      <td><span class="${statusClass}">${escapeHtml(job.last_status || '—')}</span></td>
+      <td>
+        <div class="btn-row" style="margin:0;gap:4px">
+          <button class="btn btn-secondary btn-sm" onclick="openCronModal(${job.id})">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteCronJob(${job.id})">Delete</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openCronModal(jobId = null) {
+  cronEditingId = jobId;
+  const title = document.getElementById('cron-modal-title');
+  const tbody = document.getElementById('cron-table-body');
+
+  if (jobId !== null) {
+    // find job data from rendered table rows is fragile; re-fetch from API instead
+    GET('/api/schedule/jobs').then(jobs => {
+      const job = jobs.find(j => j.id === jobId);
+      if (!job) return;
+      title.textContent = 'Edit Job';
+      document.getElementById('cj-name').value = job.name;
+      document.getElementById('cj-cron-expr').value = job.cron_expr;
+      document.getElementById('cj-source-id').value = job.source_id || '';
+      document.getElementById('cj-workers').value = job.workers;
+      document.getElementById('cj-channel-id').value = job.channel_id || '';
+      document.getElementById('cj-enabled').checked = job.enabled;
+      document.getElementById('cron-modal').classList.remove('hidden');
+    });
+  } else {
+    title.textContent = 'Add Job';
+    document.getElementById('cj-name').value = '';
+    document.getElementById('cj-cron-expr').value = '';
+    document.getElementById('cj-source-id').value = '';
+    document.getElementById('cj-workers').value = '4';
+    document.getElementById('cj-channel-id').value = '';
+    document.getElementById('cj-enabled').checked = true;
+    document.getElementById('cron-modal').classList.remove('hidden');
+  }
+}
+
+async function deleteCronJob(jobId) {
+  if (!confirm('Delete this scheduled job?')) return;
+  try {
+    await DEL(`/api/schedule/jobs/${jobId}`);
+    await loadCronJobs();
+    toast('Job deleted');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+document.getElementById('btn-add-job').addEventListener('click', () => openCronModal(null));
+
+document.getElementById('btn-reload-cron').addEventListener('click', async () => {
+  await loadCronJobs();
+  toast('Reloaded');
+});
+
+document.getElementById('cj-confirm').addEventListener('click', async () => {
+  const name = document.getElementById('cj-name').value.trim();
+  const cronExpr = document.getElementById('cj-cron-expr').value.trim();
+  if (!name || !cronExpr) {
+    toast('Name and Cron Expression are required', 'err');
+    return;
+  }
+  const body = {
+    name,
+    cron_expr: cronExpr,
+    source_id: document.getElementById('cj-source-id').value.trim(),
+    workers: parseInt(document.getElementById('cj-workers').value, 10) || 4,
+    channel_id: document.getElementById('cj-channel-id').value.trim(),
+    enabled: document.getElementById('cj-enabled').checked,
+  };
+  try {
+    if (cronEditingId !== null) {
+      await PUT(`/api/schedule/jobs/${cronEditingId}`, body);
+      toast('Job updated');
+    } else {
+      await POST('/api/schedule/jobs', body);
+      toast('Job created');
+    }
+    document.getElementById('cron-modal').classList.add('hidden');
+    await loadCronJobs();
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
+document.getElementById('cj-cancel').addEventListener('click', () => {
+  document.getElementById('cron-modal').classList.add('hidden');
+});
+
+document.getElementById('cron-modal').addEventListener('click', event => {
+  if (event.target === event.currentTarget) {
+    document.getElementById('cron-modal').classList.add('hidden');
+  }
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
 (async () => {
   try {
     initLiteGraph();

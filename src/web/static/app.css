@@ -44,6 +44,7 @@
   /* layout */
   --header-h: 48px;
   --panel-w:  340px;
+  --nav-w:    104px;
   --radius:   5px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: 'JetBrains Mono', 'Fira Code', monospace;
@@ -62,7 +63,6 @@ html, body {
 #app-header {
   display: flex;
   align-items: center;
-  gap: 10px;
   height: var(--header-h);
   padding: 0 14px;
   background: var(--nord0);
@@ -76,8 +76,20 @@ html, body {
   font-size: 14px;
   letter-spacing: .5px;
   color: var(--nord8);
+}
+
+/* ── Page toolbars ── */
+#dag-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--nord0);
   flex-shrink: 0;
 }
+.toolbar-spacer { flex: 1; }
+
 .badge {
   font-size: 11px;
   color: var(--nord4);
@@ -91,18 +103,101 @@ html, body {
   background: #5a3f35;
   color: #ebcb8b;
 }
-.header-actions { margin-left: auto; display: flex; gap: 6px; }
 
 .btn.dirty {
   box-shadow: 0 0 0 1px var(--warn) inset;
   color: var(--warn);
 }
 
-/* ── Layout ── */
-#layout {
+/* ── App body (below header) ── */
+#app-body {
   display: flex;
   height: calc(100vh - var(--header-h));
   margin-top: var(--header-h);
+}
+
+/* ── Side nav ── */
+#side-nav {
+  width: var(--nav-w);
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--nord0);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 0;
+  gap: 2px;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 4px;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  cursor: pointer;
+  width: 100%;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.nav-icon { font-size: 17px; line-height: 1; }
+.nav-item:hover:not(.active) { color: var(--nord5); background: rgba(255,255,255,0.03); }
+.nav-item.active {
+  color: var(--nord8);
+  border-left-color: var(--nord8);
+  background: rgba(136,192,208,0.07);
+}
+
+.nav-toggle {
+  align-self: flex-end;
+  margin: 0 6px 4px;
+  width: 26px; height: 26px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .12s, background .12s;
+  flex-shrink: 0;
+}
+.nav-toggle:hover { color: var(--nord5); background: var(--nord2); }
+
+/* Collapsed state */
+#side-nav.collapsed { width: 44px; }
+#side-nav.collapsed .nav-label { display: none; }
+#side-nav.collapsed .nav-item { padding: 12px 0; }
+#side-nav.collapsed .nav-toggle { align-self: center; margin: 0 0 4px; }
+
+/* ── Pages container ── */
+#pages {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+}
+
+.page {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+.page.hidden { display: none; }
+
+/* ── DAG page layout ── */
+#page-dag { flex-direction: column; }
+
+#layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
 }
 
 /* ── Canvas ── */
@@ -124,6 +219,78 @@ html, body {
   overflow: hidden;
   flex-shrink: 0;
 }
+
+/* ── Cron page ── */
+#page-cron {
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+#cron-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.cron-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#cron-table-wrap {
+  padding: 20px 24px;
+  overflow-x: auto;
+}
+
+#cron-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+#cron-table th,
+#cron-table td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+#cron-table th {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--nord0);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+#cron-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+#cron-table td { color: var(--nord5); }
+#cron-table td.mono { font-family: var(--mono); font-size: 11px; color: var(--nord8); }
+#cron-table td.dim  { color: var(--muted); font-size: 11px; }
+
+.status-ok  { color: var(--success); font-weight: 600; }
+.status-err { color: var(--danger); font-weight: 600; }
+
+.cron-empty {
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.cron-modal-box { width: 400px; }
 
 .hint-box {
   margin-top: 10px;

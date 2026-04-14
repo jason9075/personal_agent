@@ -39,28 +39,28 @@ message -> start_node (router) -> decision: reply or use_next_node -> node lifec
 pre_hook.py? -> run.py -> post_hook.py?
 ```
 
-**Node types:**
+**Node behaviour — determined by stdout format, not a stored type field:**
 
-| `node_type` | Behaviour |
-|-------------|-----------|
-| `router` | Returns structured JSON (`reply` or `use_next_node`). Used as decision/intent nodes. |
-| `agent` | Writes reply to stdout; `send_response` controls whether the engine returns immediately. |
-| `tool` | Same as `agent`; typically `send_response=True` with short `timeout_seconds`. |
+| Behaviour | Condition |
+|-----------|-----------|
+| Decision/routing | stdout is valid JSON with a `decision` field (`reply` or `use_next_node`) |
+| Direct reply | stdout is plain text (non-JSON), or JSON without a `decision` field |
+
+> The `node_type` label used in documentation (`router` / `agent` / `tool`) is conceptual only — there is no `node_type` column in the database.
 
 **Execution — `--args-json` protocol:** the engine calls `python nodes/<id>/run.py --args-json '{...}'`.
 
-- `router` nodes receive `recent_context`, `next_nodes` list, and must return either:
+- Decision nodes must return one of:
   - `{"decision":"reply","reply":"..."}` — respond directly to user
   - `{"decision":"use_next_node","next_node_id":"...","args":{...}}` — delegate to a reachable node
-- `agent`/`tool` nodes write the reply text to stdout.
+- Non-decision nodes write the reply text to stdout.
 
 **Pass / routing rules:**
 
 - `start_node` is unique (enforced by DB unique index on `start_node=1`).
 - Decision routing only selects nodes reachable through enabled outgoing edges.
-- If `send_response=True`, the engine returns the node's stdout immediately without following edges.
-- If `send_response=False` and no matching edge successor, stdout is returned as-is.
-- Edge conditions: `always`, `returncode_eq`, `output_contains`.
+- If a node produces plain-text stdout (no decision JSON) and has no enabled successor, stdout is returned as-is.
+- If a node produces plain-text stdout and has an enabled successor, execution advances to the first enabled successor.
 
 **Hook discovery:** engine auto-scans the node directory for `pre_hook.py` and `post_hook.py` alongside `run.py`. Explicit `pre_hook_path`/`post_hook_path` in the DB take precedence.
 
@@ -98,29 +98,25 @@ Tables in `db/workflow.sqlite3`:
 ```sql
 workflow_nodes(
     id TEXT PRIMARY KEY,
-    name TEXT,
-    description TEXT,
-    model_name TEXT DEFAULT 'gpt-5.4',
-    node_type TEXT DEFAULT 'agent',   -- 'router' | 'agent' | 'tool'
-    pass_index INTEGER,
-    start_node INTEGER,
-    enabled INTEGER,
-    executor_path TEXT,
-    pre_hook_path TEXT,
-    post_hook_path TEXT,
-    system_prompt_path TEXT,
-    prompt_template_path TEXT,
-    use_prev_output INTEGER,          -- pass previous node output into payload
-    send_response INTEGER,            -- return stdout immediately to Discord
-    timeout_seconds INTEGER
+    name TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    model_name TEXT NOT NULL DEFAULT 'gpt-5.4',
+    start_node INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    executor_path TEXT NOT NULL DEFAULT '',
+    pre_hook_path TEXT NOT NULL DEFAULT '',
+    post_hook_path TEXT NOT NULL DEFAULT '',
+    node_prompt_path TEXT NOT NULL DEFAULT '',   -- passed as-is into --args-json payload
+    use_prev_output INTEGER NOT NULL DEFAULT 1,  -- pass previous node stdout into payload
+    timeout_seconds INTEGER NOT NULL DEFAULT 600
 )
 
 workflow_edges(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_node_id TEXT,
-    to_node_id TEXT,
-    condition_type TEXT DEFAULT 'always',   -- 'always' | 'returncode_eq' | 'output_contains'
-    condition_value TEXT
+    from_node_id TEXT NOT NULL,
+    to_node_id TEXT NOT NULL,
+    FOREIGN KEY (from_node_id) REFERENCES workflow_nodes(id),
+    FOREIGN KEY (to_node_id) REFERENCES workflow_nodes(id)
 )
 ```
 
@@ -133,19 +129,20 @@ To add a node:
 4. For `router` nodes, return `reply` or `use_next_node` JSON; for `agent`/`tool` nodes, write reply to stdout
 
 Engine injects into `--args-json` payload automatically:
-- `system_prompt_path`, `prompt_template_path`, `model_name` (from node config, if set)
+- `node_prompt_path`, `model_name` (from node config, if set and not already in payload)
 - `prev_output` (if `use_prev_output=True` and there is previous node output)
-- `recent_context`, `next_nodes` (only for `router` nodes)
+- `recent_context` (if provided and not already in payload)
+- `next_nodes` (list of enabled outgoing neighbours, if any exist and not already in payload)
 
 ### Seed Nodes
 
-| Node ID | Type | Role |
-|---------|------|------|
-| `intent-router` | `router` | Start node; routes to finance or echo |
-| `finance` | `router` | Finance domain; routes to finance-report or finance-schedule |
-| `finance-report` | `agent` | RSS fetch → transcribe → LLM digest → Discord post |
-| `finance-schedule` | `tool` | CRUD for scheduled finance jobs |
-| `echo` | `tool` | Testing node; returns input text directly |
+| Node ID | Behaviour | Role |
+|---------|-----------|------|
+| `intent-router` | decision (JSON) | Start node; routes to finance or echo |
+| `finance` | decision (JSON) | Finance domain; routes to finance-report or finance-schedule |
+| `finance-report` | direct reply (stdout) | RSS fetch → transcribe → LLM digest → Discord post |
+| `finance-schedule` | direct reply (stdout) | CRUD for scheduled finance jobs |
+| `echo` | direct reply (stdout) | Testing node; returns input text directly |
 
 ### Finance Report Pipeline
 

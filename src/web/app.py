@@ -8,7 +8,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..bot.prompts import compose_prompt, load_engine_system_prompt, load_prompt_path
+from ..bot.prompts import build_runtime_context, compose_prompt, load_engine_system_prompt, load_prompt_path
+from ..bot.schedule_db import (
+    ScheduledJob,
+    create_job,
+    delete_job,
+    get_job,
+    list_jobs,
+    update_job,
+)
 from ..bot.workflow_db import (
     WorkflowEdge,
     WorkflowNode,
@@ -28,7 +36,7 @@ _STATIC_DIR = _THIS_DIR / "static"
 _REPO_ROOT = _THIS_DIR.parents[1]
 
 
-def create_app(workflow_db_path: Path) -> FastAPI:
+def create_app(workflow_db_path: Path, schedule_db_path: Path) -> FastAPI:
     app = FastAPI(title="personal_agent workflow", docs_url="/docs")
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
@@ -135,6 +143,52 @@ def create_app(workflow_db_path: Path) -> FastAPI:
         delete_edge(workflow_db_path, edge_id)
         return JSONResponse({"status": "ok"})
 
+    @app.get("/api/schedule/jobs")
+    async def list_jobs_endpoint() -> JSONResponse:
+        return JSONResponse([_job_to_dict(job) for job in list_jobs(schedule_db_path)])
+
+    @app.post("/api/schedule/jobs")
+    async def create_job_endpoint(body: dict[str, Any]) -> JSONResponse:
+        try:
+            job = create_job(
+                schedule_db_path,
+                name=str(body["name"]),
+                cron_expr=str(body["cron_expr"]),
+                source_id=str(body.get("source_id", "")),
+                workers=int(body.get("workers", 4)),
+                channel_id=str(body.get("channel_id", "")),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=422, detail=f"missing field: {exc}")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(_job_to_dict(job), status_code=201)
+
+    @app.put("/api/schedule/jobs/{job_id}")
+    async def update_job_endpoint(job_id: int, body: dict[str, Any]) -> JSONResponse:
+        try:
+            job = update_job(
+                schedule_db_path,
+                job_id,
+                name=str(body["name"]) if "name" in body else None,
+                cron_expr=str(body["cron_expr"]) if "cron_expr" in body else None,
+                source_id=str(body["source_id"]) if "source_id" in body else None,
+                workers=int(body["workers"]) if "workers" in body else None,
+                channel_id=str(body["channel_id"]) if "channel_id" in body else None,
+                enabled=bool(body["enabled"]) if "enabled" in body else None,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return JSONResponse(_job_to_dict(job))
+
+    @app.delete("/api/schedule/jobs/{job_id}")
+    async def delete_job_endpoint(job_id: int) -> JSONResponse:
+        try:
+            delete_job(schedule_db_path, job_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return JSONResponse({"status": "ok"})
+
     @app.post("/api/prompt-preview")
     async def prompt_preview_endpoint(body: dict[str, Any]) -> JSONResponse:
         path_str = _nullable_str(body.get("path"))
@@ -187,6 +241,21 @@ def create_app(workflow_db_path: Path) -> FastAPI:
     return app
 
 
+def _job_to_dict(job: ScheduledJob) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "name": job.name,
+        "cron_expr": job.cron_expr,
+        "source_id": job.source_id,
+        "workers": job.workers,
+        "channel_id": job.channel_id,
+        "enabled": job.enabled,
+        "last_run_at": job.last_run_at,
+        "last_status": job.last_status,
+        "last_message": job.last_message,
+    }
+
+
 def _nullable_str(value: Any) -> str | None:
     if value is None:
         return None
@@ -233,80 +302,19 @@ def _safe_engine_prompt() -> str:
 def _build_preview_prompt(node: WorkflowNode, reachable_nodes_json: str) -> str:
     engine_prompt = _safe_engine_prompt().strip()
     node_prompt = _safe_prompt_preview(node.node_prompt_path).strip()
-    executor_path = (node.executor_path or "").strip()
-    parts: list[str] = []
     if not _node_uses_llm(node):
         return "(this node does not call LLM; stdout is returned directly unless another node consumes it)"
-    if engine_prompt:
-        parts.append("ENGINE PROMPT:\n" + engine_prompt)
-    if node_prompt:
-        parts.append("NODE PROMPT:\n" + node_prompt)
-    if executor_path == "nodes/intent-router/run.py":
-        parts.append(_build_intent_runtime_context_preview(reachable_nodes_json))
-    elif executor_path == "nodes/finance/run.py":
-        parts.append(_build_finance_runtime_context_preview(node, reachable_nodes_json))
-    elif executor_path == "nodes/finance-report/run.py":
-        parts.append(_build_finance_report_preview())
-    else:
-        parts.append(_build_generic_runtime_context_preview(node, reachable_nodes_json))
-    return compose_prompt(*parts)
-
-
-def _build_run_output_preview(node: WorkflowNode) -> str:
-    return "{RUN_OUTPUT}"
-
-
-def _build_generic_runtime_context_preview(node: WorkflowNode, reachable_nodes_json: str) -> str:
-    lines = []
-    if node.use_prev_output:
-        lines.extend(["PREVIOUS_INPUT:", "{PREVIOUS_INPUT}", ""])
-    lines.extend(["RUN_OUTPUT:", "{RUN_OUTPUT}", ""])
-    lines.extend(["Reachable next nodes:", reachable_nodes_json, "", "User message:", "{user_message}"])
-    return "\n".join(lines)
-
-
-def _build_intent_runtime_context_preview(reachable_nodes_json: str) -> str:
-    return "\n".join([
-        "RUN_OUTPUT:",
-        "{RUN_OUTPUT}",
-        "",
-        "Reachable next nodes:",
-        reachable_nodes_json,
-        "",
-        "Recent conversation:",
-        "{recent_context}",
-        "",
-        "User message:",
-        "{user_message}",
-    ])
-
-
-def _build_finance_runtime_context_preview(node: WorkflowNode, reachable_nodes_json: str) -> str:
-    lines = []
-    if node.use_prev_output:
-        lines.extend(["PREVIOUS_INPUT:", "{PREVIOUS_INPUT}", ""])
-    lines.extend([
-        "RUN_OUTPUT:",
-        "{RUN_OUTPUT}",
-        "",
-        "Reachable next nodes:",
-        reachable_nodes_json,
-        "",
-        "User message:",
-        "{user_message}",
-    ])
-    return "\n".join(lines)
-
-
-def _build_finance_report_preview() -> str:
-    task_template = _safe_finance_report_task_prompt()
-    parts = [
-        "RUN_OUTPUT:",
-        "{RUN_OUTPUT}",
-    ]
-    if task_template:
-        parts.extend(["", "TASK PROMPT:", task_template])
-    return "\n".join(parts)
+    next_nodes = json.loads(reachable_nodes_json) if reachable_nodes_json.strip() else []
+    task_prompt = _safe_finance_report_task_prompt() if (node.executor_path or "").strip() == "nodes/finance-report/run.py" else ""
+    runtime_context = build_runtime_context(
+        previous_input="{PREVIOUS_INPUT}" if node.use_prev_output else "",
+        run_output="{RUN_OUTPUT}",
+        next_nodes=next_nodes,
+        recent_context="{recent_context}" if (node.executor_path or "").strip() == "nodes/intent-router/run.py" else "",
+        user_message="{user_message}",
+        task_prompt=task_prompt,
+    )
+    return compose_prompt(engine_prompt, node_prompt, runtime_context)
 
 
 def _read_code_file(path_str: Any) -> str:
