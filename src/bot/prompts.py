@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import NODES_DIR
+from .config import ENGINE_SYSTEM_PROMPT_PATH, NODES_DIR
 
 
 def load_prompt_path(path_str: str | None) -> str:
@@ -22,3 +22,15 @@ def load_prompt_path(path_str: str | None) -> str:
     if not path.exists():
         raise RuntimeError(f"prompt not found: {path}")
     return path.read_text(encoding="utf-8")
+
+
+def load_engine_system_prompt() -> str:
+    """Read the shared engine-level system prompt."""
+    if not ENGINE_SYSTEM_PROMPT_PATH.exists():
+        raise RuntimeError(f"engine system prompt not found: {ENGINE_SYSTEM_PROMPT_PATH}")
+    return ENGINE_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def compose_prompt(*sections: str) -> str:
+    """Join non-empty prompt sections with blank lines."""
+    return "\n\n".join(section.strip() for section in sections if section and section.strip())

@@ -1,6 +1,5 @@
 """FastAPI web application for workflow management."""
 from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any
@@ -9,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..bot.prompts import load_prompt_path
+from ..bot.prompts import compose_prompt, load_engine_system_prompt, load_prompt_path
 from ..bot.workflow_db import (
     WorkflowEdge,
     WorkflowNode,
@@ -82,17 +81,13 @@ def create_app(workflow_db_path: Path) -> FastAPI:
                 name=node_id,
                 description="",
                 model_name="gpt-5.4",
-                node_type="agent",
-                pass_index=1,
                 start_node=False,
                 enabled=True,
                 executor_path="",
                 pre_hook_path=None,
                 post_hook_path=None,
-                system_prompt_path=None,
-                prompt_template_path=None,
+                node_prompt_path=None,
                 use_prev_output=True,
-                send_response=True,
                 timeout_seconds=600,
             )
 
@@ -102,17 +97,13 @@ def create_app(workflow_db_path: Path) -> FastAPI:
                 name=str(body.get("name", existing.name)),
                 description=str(body.get("description", existing.description)),
                 model_name=str(body.get("model_name", existing.model_name or "gpt-5.4")),
-                node_type=str(body.get("node_type", existing.node_type)),
-                pass_index=int(body.get("pass_index", existing.pass_index)),
                 start_node=bool(body.get("start_node", existing.start_node)),
                 enabled=bool(body.get("enabled", existing.enabled)),
                 executor_path=str(body.get("executor_path", existing.executor_path)),
                 pre_hook_path=_nullable_str(body.get("pre_hook_path", existing.pre_hook_path)),
                 post_hook_path=_nullable_str(body.get("post_hook_path", existing.post_hook_path)),
-                system_prompt_path=_nullable_str(body.get("system_prompt_path", existing.system_prompt_path)),
-                prompt_template_path=_nullable_str(body.get("prompt_template_path", existing.prompt_template_path)),
+                node_prompt_path=_nullable_str(body.get("node_prompt_path", existing.node_prompt_path)),
                 use_prev_output=bool(body.get("use_prev_output", existing.use_prev_output)),
-                send_response=bool(body.get("send_response", existing.send_response)),
                 timeout_seconds=int(body.get("timeout_seconds", existing.timeout_seconds)),
             )
         except (TypeError, ValueError) as exc:
@@ -152,6 +143,13 @@ def create_app(workflow_db_path: Path) -> FastAPI:
             "content": _safe_prompt_preview(path_str),
         })
 
+    @app.get("/api/engine-prompt")
+    async def engine_prompt_endpoint() -> JSONResponse:
+        return JSONResponse({
+            "path": "src/bot/engine_system_prompt.md",
+            "content": _safe_engine_prompt(),
+        })
+
     @app.post("/api/node-details-preview")
     async def node_details_preview_endpoint(body: dict[str, Any]) -> JSONResponse:
         node = WorkflowNode(
@@ -159,25 +157,25 @@ def create_app(workflow_db_path: Path) -> FastAPI:
             name=str(body.get("name", "")),
             description=str(body.get("description", "")),
             model_name=str(body.get("model_name", "gpt-5.4")),
-            node_type=str(body.get("node_type", "agent")),
-            pass_index=int(body.get("pass_index", 1)),
             start_node=bool(body.get("start_node", False)),
             enabled=bool(body.get("enabled", True)),
             executor_path=str(body.get("executor_path", "")),
             pre_hook_path=_nullable_str(body.get("pre_hook_path")),
             post_hook_path=_nullable_str(body.get("post_hook_path")),
-            system_prompt_path=_nullable_str(body.get("system_prompt_path")),
-            prompt_template_path=_nullable_str(body.get("prompt_template_path")),
+            node_prompt_path=_nullable_str(body.get("node_prompt_path")),
             use_prev_output=bool(body.get("use_prev_output", True)),
-            send_response=bool(body.get("send_response", True)),
             timeout_seconds=int(body.get("timeout_seconds", 600)),
         )
         hook_info = detect_node_hooks(node, _REPO_ROOT)
         resolved_tools = _resolve_node_tools(node, workflow_db_path)
+        reachable_nodes_json = _build_reachable_nodes_preview(node, workflow_db_path)
         return JSONResponse({
-            "system_prompt_path": node.system_prompt_path,
-            "system_prompt": _safe_prompt_preview(node.system_prompt_path),
-            "preview_prompt": _build_preview_prompt(node),
+            "engine_prompt_path": "src/bot/engine_system_prompt.md",
+            "engine_prompt": _safe_engine_prompt(),
+            "node_prompt_path": node.node_prompt_path,
+            "node_prompt": _safe_prompt_preview(node.node_prompt_path),
+            "run_output_preview": _build_run_output_preview(node),
+            "preview_prompt": _build_preview_prompt(node, reachable_nodes_json),
             "resolved_tools": resolved_tools,
             "execution_code": {
                 "pre_hook": _read_code_file(hook_info.get("effective_pre_hook_path")),
@@ -203,19 +201,14 @@ def _node_to_dict(node: WorkflowNode) -> dict[str, Any]:
         "name": node.name,
         "description": node.description,
         "model_name": node.model_name,
-        "node_type": node.node_type,
-        "pass_index": node.pass_index,
         "start_node": node.start_node,
         "enabled": node.enabled,
         "executor_path": node.executor_path,
         "pre_hook_path": node.pre_hook_path,
         "post_hook_path": node.post_hook_path,
-        "system_prompt_path": node.system_prompt_path,
-        "prompt_template_path": node.prompt_template_path,
-        "system_prompt_preview": _safe_prompt_preview(node.system_prompt_path),
-        "prompt_template_preview": _safe_prompt_preview(node.prompt_template_path),
+        "node_prompt_path": node.node_prompt_path,
+        "node_prompt_preview": _safe_prompt_preview(node.node_prompt_path),
         "use_prev_output": node.use_prev_output,
-        "send_response": node.send_response,
         "timeout_seconds": node.timeout_seconds,
         "hooks": hook_info,
     }
@@ -230,21 +223,90 @@ def _safe_prompt_preview(path_str: str | None) -> str:
         return f"[prompt load error] {exc}"
 
 
-def _build_preview_prompt(node: WorkflowNode) -> str:
-    system_prompt = _safe_prompt_preview(node.system_prompt_path).strip()
-    template = _safe_prompt_preview(node.prompt_template_path).strip() if node.prompt_template_path else ""
+def _safe_engine_prompt() -> str:
+    try:
+        return load_engine_system_prompt()
+    except RuntimeError as exc:
+        return f"[engine prompt load error] {exc}"
+
+
+def _build_preview_prompt(node: WorkflowNode, reachable_nodes_json: str) -> str:
+    engine_prompt = _safe_engine_prompt().strip()
+    node_prompt = _safe_prompt_preview(node.node_prompt_path).strip()
+    executor_path = (node.executor_path or "").strip()
     parts: list[str] = []
-    if system_prompt:
-        parts.append(system_prompt)
-    parts.append("----")
-    parts.append(f"Model: {node.model_name or 'gpt-5.4'}")
-    parts.append(f"Node Name: {node.name or '(empty)'}")
-    parts.append(f"Node Description: {node.description or '(empty)'}")
+    if not _node_uses_llm(node):
+        return "(this node does not call LLM; stdout is returned directly unless another node consumes it)"
+    if engine_prompt:
+        parts.append("ENGINE PROMPT:\n" + engine_prompt)
+    if node_prompt:
+        parts.append("NODE PROMPT:\n" + node_prompt)
+    if executor_path == "nodes/intent-router/run.py":
+        parts.append(_build_intent_runtime_context_preview(reachable_nodes_json))
+    elif executor_path == "nodes/finance/run.py":
+        parts.append(_build_finance_runtime_context_preview(node, reachable_nodes_json))
+    elif executor_path == "nodes/finance-report/run.py":
+        parts.append(_build_finance_report_preview())
+    else:
+        parts.append(_build_generic_runtime_context_preview(node, reachable_nodes_json))
+    return compose_prompt(*parts)
+
+
+def _build_run_output_preview(node: WorkflowNode) -> str:
+    return "{RUN_OUTPUT}"
+
+
+def _build_generic_runtime_context_preview(node: WorkflowNode, reachable_nodes_json: str) -> str:
+    lines = []
     if node.use_prev_output:
-        parts.append("PREVIOUS_INPUT:\n{PREVIOUS_INPUT}")
-    if template:
-        parts.append("TEMPLATE:\n" + template)
-    return "\n\n".join(parts).strip()
+        lines.extend(["PREVIOUS_INPUT:", "{PREVIOUS_INPUT}", ""])
+    lines.extend(["RUN_OUTPUT:", "{RUN_OUTPUT}", ""])
+    lines.extend(["Reachable next nodes:", reachable_nodes_json, "", "User message:", "{user_message}"])
+    return "\n".join(lines)
+
+
+def _build_intent_runtime_context_preview(reachable_nodes_json: str) -> str:
+    return "\n".join([
+        "RUN_OUTPUT:",
+        "{RUN_OUTPUT}",
+        "",
+        "Reachable next nodes:",
+        reachable_nodes_json,
+        "",
+        "Recent conversation:",
+        "{recent_context}",
+        "",
+        "User message:",
+        "{user_message}",
+    ])
+
+
+def _build_finance_runtime_context_preview(node: WorkflowNode, reachable_nodes_json: str) -> str:
+    lines = []
+    if node.use_prev_output:
+        lines.extend(["PREVIOUS_INPUT:", "{PREVIOUS_INPUT}", ""])
+    lines.extend([
+        "RUN_OUTPUT:",
+        "{RUN_OUTPUT}",
+        "",
+        "Reachable next nodes:",
+        reachable_nodes_json,
+        "",
+        "User message:",
+        "{user_message}",
+    ])
+    return "\n".join(lines)
+
+
+def _build_finance_report_preview() -> str:
+    task_template = _safe_finance_report_task_prompt()
+    parts = [
+        "RUN_OUTPUT:",
+        "{RUN_OUTPUT}",
+    ]
+    if task_template:
+        parts.extend(["", "TASK PROMPT:", task_template])
+    return "\n".join(parts)
 
 
 def _read_code_file(path_str: Any) -> str:
@@ -270,3 +332,49 @@ def _resolve_node_tools(node: WorkflowNode, workflow_db_path: Path) -> list[str]
             text += f" — {description}"
         resolved.append(text)
     return resolved
+
+
+def _build_reachable_nodes_preview(node: WorkflowNode, workflow_db_path: Path) -> str:
+    graph = load_workflow_graph(workflow_db_path)
+    candidates = [
+        {
+            "id": candidate.id,
+            "name": candidate.name,
+            "description": candidate.description or candidate.name,
+            "model_name": candidate.model_name,
+        }
+        for candidate in graph.candidate_targets(node.id)
+        if candidate.enabled
+    ]
+    if not candidates:
+        return "[]"
+    return json_dumps_pretty(candidates)
+
+
+def json_dumps_pretty(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def _node_uses_llm(node: WorkflowNode) -> bool:
+    return (node.executor_path or "").strip() in {
+        "nodes/intent-router/run.py",
+        "nodes/finance/run.py",
+        "nodes/finance-report/run.py",
+    }
+
+
+def _safe_finance_report_task_prompt() -> str:
+    path = "nodes/finance-report/impl/prompt/finance_report_analysis.md"
+    raw = _safe_prompt_preview(path).strip()
+    if not raw or raw.startswith("[prompt load error]"):
+        return raw
+    try:
+        return raw.format(
+            transcript_path="{transcript_path}",
+            note_date="{note_date}",
+            note_path="{note_path}",
+            source_title="{source_title}",
+            source_author="{source_author}",
+        )
+    except (KeyError, ValueError):
+        return raw

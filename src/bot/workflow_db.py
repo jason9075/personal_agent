@@ -12,17 +12,13 @@ class WorkflowNode:
     name: str
     description: str
     model_name: str
-    node_type: str
-    pass_index: int
     start_node: bool
     enabled: bool
     executor_path: str
     pre_hook_path: str | None
     post_hook_path: str | None
-    system_prompt_path: str | None
-    prompt_template_path: str | None
+    node_prompt_path: str | None
     use_prev_output: bool
-    send_response: bool
     timeout_seconds: int
 
 
@@ -61,19 +57,13 @@ CREATE TABLE IF NOT EXISTS workflow_nodes (
     name TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     model_name TEXT NOT NULL DEFAULT 'gpt-5.4',
-    node_type TEXT NOT NULL DEFAULT 'agent',
-    pass_index INTEGER NOT NULL DEFAULT 1,
     start_node INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     executor_path TEXT NOT NULL DEFAULT '',
     pre_hook_path TEXT NOT NULL DEFAULT '',
     post_hook_path TEXT NOT NULL DEFAULT '',
-    system_prompt TEXT NOT NULL DEFAULT '',
-    prompt_template TEXT NOT NULL DEFAULT '',
-    system_prompt_path TEXT NOT NULL DEFAULT '',
-    prompt_template_path TEXT NOT NULL DEFAULT '',
+    node_prompt_path TEXT NOT NULL DEFAULT '',
     use_prev_output INTEGER NOT NULL DEFAULT 1,
-    send_response INTEGER NOT NULL DEFAULT 1,
     timeout_seconds INTEGER NOT NULL DEFAULT 600
 );
 
@@ -93,17 +83,13 @@ _SEED_NODES: list[WorkflowNode] = [
         name="Intent Router",
         description="Top-level entry node. Either reply directly or delegate to a reachable domain node.",
         model_name="gpt-5.4",
-        node_type="router",
-        pass_index=1,
         start_node=True,
         enabled=True,
         executor_path="nodes/intent-router/run.py",
         pre_hook_path=None,
         post_hook_path=None,
-        system_prompt_path="nodes/intent-router/system.md",
-        prompt_template_path="nodes/intent-router/tool_router.md",
+        node_prompt_path="nodes/intent-router/system.md",
         use_prev_output=False,
-        send_response=False,
         timeout_seconds=120,
     ),
     WorkflowNode(
@@ -111,17 +97,13 @@ _SEED_NODES: list[WorkflowNode] = [
         name="Finance",
         description="Finance domain node. Handles finance questions directly or delegates to finance subflows.",
         model_name="gpt-5.4",
-        node_type="router",
-        pass_index=2,
         start_node=False,
         enabled=True,
         executor_path="nodes/finance/run.py",
         pre_hook_path=None,
         post_hook_path=None,
-        system_prompt_path="nodes/finance/system.md",
-        prompt_template_path="nodes/finance/planner.md",
+        node_prompt_path="nodes/finance/system.md",
         use_prev_output=True,
-        send_response=False,
         timeout_seconds=180,
     ),
     WorkflowNode(
@@ -129,17 +111,13 @@ _SEED_NODES: list[WorkflowNode] = [
         name="Finance Report",
         description="Download the selected finance RSS episode, transcribe audio, and generate a markdown digest.",
         model_name="gpt-5.4",
-        node_type="agent",
-        pass_index=3,
         start_node=False,
         enabled=True,
         executor_path="nodes/finance-report/run.py",
         pre_hook_path=None,
         post_hook_path=None,
-        system_prompt_path="nodes/finance-report/system.md",
-        prompt_template_path=None,
+        node_prompt_path="nodes/finance-report/system.md",
         use_prev_output=True,
-        send_response=True,
         timeout_seconds=7200,
     ),
     WorkflowNode(
@@ -147,17 +125,13 @@ _SEED_NODES: list[WorkflowNode] = [
         name="Finance Schedule",
         description="Manage finance report schedules stored in SQLite.",
         model_name="gpt-5.4",
-        node_type="tool",
-        pass_index=3,
         start_node=False,
         enabled=True,
         executor_path="nodes/finance-schedule/run.py",
         pre_hook_path=None,
         post_hook_path=None,
-        system_prompt_path=None,
-        prompt_template_path=None,
+        node_prompt_path=None,
         use_prev_output=True,
-        send_response=True,
         timeout_seconds=60,
     ),
     WorkflowNode(
@@ -165,17 +139,13 @@ _SEED_NODES: list[WorkflowNode] = [
         name="Echo",
         description="Testing node that returns the extracted text directly.",
         model_name="gpt-5.4",
-        node_type="tool",
-        pass_index=2,
         start_node=False,
         enabled=True,
         executor_path="nodes/echo/run.py",
         pre_hook_path=None,
         post_hook_path=None,
-        system_prompt_path=None,
-        prompt_template_path=None,
+        node_prompt_path=None,
         use_prev_output=True,
-        send_response=True,
         timeout_seconds=30,
     ),
 ]
@@ -227,18 +197,14 @@ def _row_to_node(row: sqlite3.Row | tuple) -> WorkflowNode:
         name=row[1],
         description=row[2],
         model_name=row[3] or "gpt-5.4",
-        node_type=row[4],
-        pass_index=int(row[5]),
-        start_node=bool(row[6]),
-        enabled=bool(row[7]),
-        executor_path=row[8],
-        pre_hook_path=row[9] or None,
-        post_hook_path=row[10] or None,
-        system_prompt_path=row[11] or None,
-        prompt_template_path=row[12] or None,
-        use_prev_output=bool(row[13]),
-        send_response=bool(row[14]),
-        timeout_seconds=int(row[15]),
+        start_node=bool(row[4]),
+        enabled=bool(row[5]),
+        executor_path=row[6],
+        pre_hook_path=row[7] or None,
+        post_hook_path=row[8] or None,
+        node_prompt_path=row[9] or None,
+        use_prev_output=bool(row[10]),
+        timeout_seconds=int(row[11]),
     )
 
 
@@ -246,11 +212,10 @@ def load_workflow_graph(db_path: Path) -> WorkflowGraph:
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT id, name, description, model_name, node_type, pass_index, start_node, enabled,
+            SELECT id, name, description, model_name, start_node, enabled,
                    executor_path, pre_hook_path, post_hook_path,
-                   COALESCE(NULLIF(system_prompt_path, ''), '') AS system_prompt_path,
-                   COALESCE(NULLIF(prompt_template_path, ''), '') AS prompt_template_path,
-                   use_prev_output, send_response, timeout_seconds
+                   COALESCE(NULLIF(node_prompt_path, ''), '') AS node_prompt_path,
+                   use_prev_output, timeout_seconds
             FROM workflow_nodes
             ORDER BY start_node DESC, id ASC
             """
@@ -298,17 +263,13 @@ def _upsert_node_conn(conn: sqlite3.Connection, node: WorkflowNode) -> None:
         "name",
         "description",
         "model_name",
-        "node_type",
-        "pass_index",
         "start_node",
         "enabled",
         "executor_path",
         "pre_hook_path",
         "post_hook_path",
-        "system_prompt_path",
-        "prompt_template_path",
+        "node_prompt_path",
         "use_prev_output",
-        "send_response",
         "timeout_seconds",
     ]
     values: list[object] = [
@@ -316,17 +277,13 @@ def _upsert_node_conn(conn: sqlite3.Connection, node: WorkflowNode) -> None:
         node.name,
         node.description,
         node.model_name,
-        node.node_type,
-        node.pass_index,
         1 if node.start_node else 0,
         1 if node.enabled else 0,
         node.executor_path,
         node.pre_hook_path or "",
         node.post_hook_path or "",
-        node.system_prompt_path or "",
-        node.prompt_template_path or "",
+        node.node_prompt_path or "",
         1 if node.use_prev_output else 0,
-        1 if node.send_response else 0,
         node.timeout_seconds,
     ]
     update_columns = [column for column in insert_columns if column != "id"]

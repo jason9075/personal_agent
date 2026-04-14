@@ -27,8 +27,8 @@ def main() -> int:
     explicit_list_sources = bool(payload.get("list_sources", False))
     workers = int(payload.get("workers", 4) or 4)
     next_nodes = payload.get("next_nodes", [])
-    system_prompt_path = str(payload.get("system_prompt_path", "")).strip()
-    prompt_template_path = str(payload.get("prompt_template_path", "")).strip()
+    node_prompt_path = str(payload.get("node_prompt_path", "")).strip()
+    previous_input = str(payload.get("prev_output", "")).strip()
 
     sources = list_available_sources()
     note_index = _build_note_index(node_dir.parent / "finance-report" / "notes", sources)
@@ -52,23 +52,17 @@ def main() -> int:
     else:
         selected_source = match_source_from_text(message, sources)
 
-    system_prompt = _read_text(system_prompt_path, node_dir)
-    prompt_template = _read_text(prompt_template_path, node_dir)
-    prompt = prompt_template.format(
-        next_nodes_json=json.dumps(next_nodes, ensure_ascii=False, indent=2),
-        user_message=message or "(empty)",
-        explicit_hints=json.dumps(
-            {
+    engine_prompt = _read_text("src/bot/engine_system_prompt.md", node_dir)
+    node_prompt = _read_text(node_prompt_path, node_dir)
+    run_output = json.dumps(
+        {
+            "explicit_hints": {
                 "source": explicit_source,
                 "target_date": explicit_target_date,
                 "matched_source": selected_source.source_id if selected_source else "",
                 "workers": workers,
             },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        sources_json=json.dumps(
-            [
+            "available_rss_sources": [
                 {
                     "id": source.source_id,
                     "title": source.title,
@@ -77,13 +71,18 @@ def main() -> int:
                 }
                 for source in sources
             ],
-            ensure_ascii=False,
-            indent=2,
-        ),
-        notes_json=json.dumps(note_index, ensure_ascii=False, indent=2),
+            "existing_note_inventory": note_index,
+        },
+        ensure_ascii=False,
+        indent=2,
     )
-    if system_prompt:
-        prompt = f"{system_prompt}\n\n{prompt}"
+    runtime_context = _build_runtime_context(
+        previous_input=previous_input,
+        run_output=run_output,
+        next_nodes_json=json.dumps(next_nodes, ensure_ascii=False, indent=2),
+        user_message=message or "(empty)",
+    )
+    prompt = _compose_prompt(engine_prompt, node_prompt, runtime_context)
 
     repo_root = node_dir.parents[1]
     model_name = str(payload.get("model_name", "")).strip() or os.getenv("FINANCE_SELECTOR_MODEL", "").strip() or os.getenv("FINANCE_CODEX_MODEL", "").strip() or "gpt-5.4"
@@ -171,6 +170,33 @@ def _parse_json_response(raw: str) -> dict:
     if not isinstance(parsed, dict):
         return {"decision": "reply", "reply": "目前無法完成 finance 判斷，請稍後再試。"}
     return parsed
+
+
+def _compose_prompt(*sections: str) -> str:
+    return "\n\n".join(section.strip() for section in sections if section and section.strip())
+
+
+def _build_runtime_context(
+    *,
+    previous_input: str,
+    run_output: str,
+    next_nodes_json: str,
+    user_message: str,
+) -> str:
+    sections = []
+    if previous_input:
+        sections.extend(["PREVIOUS_INPUT:", previous_input, ""])
+    sections.extend([
+        "RUN_OUTPUT:",
+        run_output,
+        "",
+        "Reachable next nodes:",
+        next_nodes_json,
+        "",
+        "User message:",
+        user_message,
+    ])
+    return "\n".join(sections)
 
 
 def _format_source_list(sources: list) -> str:

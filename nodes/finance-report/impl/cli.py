@@ -12,6 +12,7 @@ class FinanceCliArgs:
     target_date: date | None
     list_sources: bool
     workers: int
+    node_prompt_path: str
 
 
 def parse_cli_args(argv: list[str]) -> FinanceCliArgs:
@@ -19,6 +20,7 @@ def parse_cli_args(argv: list[str]) -> FinanceCliArgs:
     parser.add_argument("--source", dest="source_id", default="")
     parser.add_argument("--list-sources", action="store_true")
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--node-prompt-path", default="")
     parser.add_argument("target_date", nargs="?", default="")
     args = parser.parse_args(argv)
 
@@ -41,4 +43,5 @@ def parse_cli_args(argv: list[str]) -> FinanceCliArgs:
         target_date=target_date,
         list_sources=args.list_sources,
         workers=args.workers,
+        node_prompt_path=str(args.node_prompt_path or "").strip(),
     )

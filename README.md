@@ -20,7 +20,7 @@ Discord mention
   -> start_node (usually intent-router)
   -> decision node replies directly or selects one reachable next node
   -> node lifecycle: pre_hook.py? -> run.py -> post_hook.py?
-  -> execution node with send_response=true sends output to Discord
+  -> if no next node is selected, the current node output is returned to Discord
 ```
 
 Important rules:

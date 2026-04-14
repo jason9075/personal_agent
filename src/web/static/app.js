@@ -64,7 +64,6 @@ function registerNodeType() {
       model_name: 'gpt-5.4',
       enabled: true,
       start_node: false,
-      send_response: false,
       hooks: {},
     };
     this.resizable = false;
@@ -104,7 +103,6 @@ function registerNodeType() {
 
     drawBadge(shortModelName(this.properties.model_name), modelColors(this.properties.model_name).badge);
     if (this.properties.start_node) drawBadge('START', '#BF616A');
-    if (this.properties.send_response) drawBadge('RESP', '#A3BE8C');
 
     const hooks = this.properties.hooks || {};
     const lifecycle = [
@@ -207,7 +205,6 @@ async function loadGraph() {
         model_name: node.model_name || 'gpt-5.4',
         enabled: node.enabled,
         start_node: node.start_node,
-        send_response: node.send_response,
         hooks: node.hooks || {},
       };
       lnode._applyColors();
@@ -413,8 +410,7 @@ function renderNodeEditor(lnode) {
   setValue('ne-executor-path', node.executor_path || '');
   setValue('ne-pre-hook-path', node.pre_hook_path || '');
   setValue('ne-post-hook-path', node.post_hook_path || '');
-  setValue('ne-system-prompt-path', node.system_prompt_path || '');
-  setValue('ne-prompt-template-path', node.prompt_template_path || '');
+  setValue('ne-node-prompt-path', node.node_prompt_path || '');
   setValue('ne-timeout-seconds', String(node.timeout_seconds || 600));
   setValue('ne-hook-pre', hooks.effective_pre_hook_path || '(none)', true);
   setValue('ne-hook-run', hooks.effective_executor_path || '(none)', true);
@@ -453,9 +449,10 @@ async function renderNodeDetails(node, hooks = {}) {
   setText('dm-model-name', node.model_name || 'gpt-5.4');
   setPre('dm-description', node.description || '(empty)');
   setText('dm-timeout', `${node.timeout_seconds ?? 0}s`);
-  setPre('dm-system-prompt-path', detail.system_prompt_path || '(none)');
+  setPre('dm-node-prompt-path', detail.node_prompt_path || '(none)');
   setCode('dm-allowed-tools', (detail.resolved_tools || []).length ? detail.resolved_tools.join('\n') : '(none)', 'text');
-  setMarkdown('dm-system-prompt', detail.system_prompt || '(empty)');
+  setPre('dm-run-output-preview', detail.run_output_preview || '{RUN_OUTPUT}');
+  setMarkdown('dm-node-prompt', detail.node_prompt || '(empty)');
   setPre('dm-preview-prompt', detail.preview_prompt || '(empty)');
   setCode('dm-pre-hook-code', detail.execution_code.pre_hook || '(none)');
   setCode('dm-run-code', detail.execution_code.run || '(none)');
@@ -473,13 +470,11 @@ function collectNodeForm(nodeId) {
     model_name: document.getElementById('ne-model-name').value,
     enabled: document.getElementById('ne-enabled').checked,
     start_node: document.getElementById('ne-start-node').checked,
-    send_response: true,
     use_prev_output: document.getElementById('ne-use-prev-output').checked,
     executor_path: document.getElementById('ne-executor-path').value.trim(),
     pre_hook_path: blankToNull(document.getElementById('ne-pre-hook-path').value),
     post_hook_path: blankToNull(document.getElementById('ne-post-hook-path').value),
-    system_prompt_path: blankToNull(document.getElementById('ne-system-prompt-path').value),
-    prompt_template_path: blankToNull(document.getElementById('ne-prompt-template-path').value),
+    node_prompt_path: blankToNull(document.getElementById('ne-node-prompt-path').value),
     timeout_seconds: parseInt(document.getElementById('ne-timeout-seconds').value, 10),
   };
 }
@@ -495,8 +490,7 @@ function bindDraftInputs() {
     'ne-executor-path',
     'ne-pre-hook-path',
     'ne-post-hook-path',
-    'ne-system-prompt-path',
-    'ne-prompt-template-path',
+    'ne-node-prompt-path',
     'ne-timeout-seconds',
   ].forEach(id => {
     const el = document.getElementById(id);
@@ -530,13 +524,11 @@ function collectNodeFormLoose(nodeId) {
     model_name: document.getElementById('ne-model-name').value,
     enabled: document.getElementById('ne-enabled').checked,
     start_node: document.getElementById('ne-start-node').checked,
-    send_response: true,
     use_prev_output: document.getElementById('ne-use-prev-output').checked,
     executor_path: document.getElementById('ne-executor-path').value.trim(),
     pre_hook_path: blankToNull(document.getElementById('ne-pre-hook-path').value),
     post_hook_path: blankToNull(document.getElementById('ne-post-hook-path').value),
-    system_prompt_path: blankToNull(document.getElementById('ne-system-prompt-path').value),
-    prompt_template_path: blankToNull(document.getElementById('ne-prompt-template-path').value),
+    node_prompt_path: blankToNull(document.getElementById('ne-node-prompt-path').value),
     timeout_seconds: parseInt(document.getElementById('ne-timeout-seconds').value || '600', 10),
   };
 }
@@ -764,7 +756,6 @@ function formatFlags(node) {
   const flags = [];
   if (node.enabled) flags.push('enabled');
   if (node.start_node) flags.push('start_node');
-  if (node.send_response) flags.push('send_response');
   if (node.use_prev_output) flags.push('use_prev_output');
   return flags.length ? flags.join(' | ') : '(none)';
 }
@@ -794,7 +785,6 @@ function applyDraftToCanvas(nodeId, draft) {
     model_name: draft.model_name || 'gpt-5.4',
     enabled: !!draft.enabled,
     start_node: !!draft.start_node,
-    send_response: !!draft.send_response,
     hooks: lnode.properties.hooks || {},
   };
   lnode._applyColors();
@@ -820,17 +810,13 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
       name: document.getElementById('modal-name').value.trim() || nodeId,
       description: '',
       model_name: document.getElementById('modal-model-name').value,
-      node_type: 'agent',
-      pass_index: 1,
       enabled: true,
       start_node: false,
-      send_response: true,
       use_prev_output: true,
       executor_path: '',
       pre_hook_path: null,
       post_hook_path: null,
-      system_prompt_path: null,
-      prompt_template_path: null,
+      node_prompt_path: null,
       timeout_seconds: 600,
     });
     document.getElementById('modal').classList.add('hidden');
@@ -907,6 +893,17 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
   toast('Reloaded');
 });
 
+document.getElementById('btn-engine-prompt').addEventListener('click', async () => {
+  try {
+    const detail = await GET('/api/engine-prompt');
+    setPre('engine-prompt-path', detail.path || '(none)');
+    setMarkdown('engine-prompt-content', detail.content || '(empty)');
+    document.getElementById('engine-prompt-modal').classList.remove('hidden');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
 document.getElementById('details-close').addEventListener('click', () => {
   document.getElementById('details-modal').classList.add('hidden');
 });
@@ -918,6 +915,20 @@ document.getElementById('details-close-top').addEventListener('click', () => {
 document.getElementById('details-modal').addEventListener('click', event => {
   if (event.target === event.currentTarget) {
     document.getElementById('details-modal').classList.add('hidden');
+  }
+});
+
+document.getElementById('engine-prompt-close').addEventListener('click', () => {
+  document.getElementById('engine-prompt-modal').classList.add('hidden');
+});
+
+document.getElementById('engine-prompt-close-top').addEventListener('click', () => {
+  document.getElementById('engine-prompt-modal').classList.add('hidden');
+});
+
+document.getElementById('engine-prompt-modal').addEventListener('click', event => {
+  if (event.target === event.currentTarget) {
+    document.getElementById('engine-prompt-modal').classList.add('hidden');
   }
 });
 

@@ -19,17 +19,20 @@ def main() -> int:
         target_date = str(payload.get("target_date") or prev_payload.get("target_date", "")).strip()
         workers = int(payload.get("workers") or prev_payload.get("workers", 4) or 4)
         list_sources = bool(payload.get("list_sources", False))
+        node_prompt_path = str(payload.get("node_prompt_path", "")).strip()
     else:
         parser = argparse.ArgumentParser()
         parser.add_argument("--source", default="")
         parser.add_argument("--target-date", default="")
         parser.add_argument("--workers", type=int, default=4)
         parser.add_argument("--list-sources", action="store_true")
+        parser.add_argument("--node-prompt-path", default="")
         parsed = parser.parse_args()
         source = parsed.source
         target_date = parsed.target_date
         workers = parsed.workers
         list_sources = parsed.list_sources
+        node_prompt_path = parsed.node_prompt_path
 
     node_dir = Path(__file__).resolve().parent
     if str(node_dir) not in sys.path:
@@ -43,6 +46,8 @@ def main() -> int:
         argv.extend(["--workers", str(workers)])
         if source:
             argv.extend(["--source", source])
+        if node_prompt_path:
+            argv.extend(["--node-prompt-path", node_prompt_path])
         if target_date:
             argv.append(target_date)
 

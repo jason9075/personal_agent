@@ -16,24 +16,32 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
-    system_prompt_path = str(payload.get("system_prompt_path", "")).strip()
-    prompt_template_path = str(payload.get("prompt_template_path", "")).strip()
+    node_prompt_path = str(payload.get("node_prompt_path", "")).strip()
     message = str(payload.get("message", "")).strip()
     recent_context = str(payload.get("recent_context", "")).strip()
     next_nodes = payload.get("next_nodes", [])
 
     node_dir = Path(__file__).resolve().parent
-    system_prompt = _read_text(system_prompt_path, node_dir)
-    template = _read_text(prompt_template_path, node_dir)
-    prompt = template.format(
+    repo_root = node_dir.parents[1]
+    engine_prompt = _read_text("src/bot/engine_system_prompt.md", node_dir)
+    node_prompt = _read_text(node_prompt_path, node_dir)
+    run_output = json.dumps(
+        {
+            "recent_context": recent_context or "",
+            "reachable_next_nodes": next_nodes,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    runtime_context = _build_runtime_context(
+        previous_input="",
+        run_output=run_output,
         next_nodes_json=json.dumps(next_nodes, ensure_ascii=False, indent=2),
         recent_context=recent_context or "(none)",
         user_message=message or "(empty)",
     )
-    if system_prompt:
-        prompt = f"{system_prompt}\n\n{prompt}"
+    prompt = _compose_prompt(engine_prompt, node_prompt, runtime_context)
 
-    repo_root = node_dir.parents[1]
     model_name = str(payload.get("model_name", "")).strip() or os.getenv("INTENT_ROUTER_MODEL", "").strip() or os.getenv("FINANCE_CODEX_MODEL", "").strip() or "gpt-5.4"
     cmd = [
         "codex",
@@ -89,6 +97,28 @@ def _parse_json_response(raw: str) -> dict:
     if not isinstance(parsed, dict):
         return {"decision": "reply", "reply": "目前無法完成判斷，請稍後再試。"}
     return parsed
+
+
+def _compose_prompt(*sections: str) -> str:
+    return "\n\n".join(section.strip() for section in sections if section and section.strip())
+
+
+def _build_runtime_context(
+    *,
+    previous_input: str,
+    run_output: str,
+    next_nodes_json: str,
+    recent_context: str,
+    user_message: str,
+) -> str:
+    sections = []
+    if previous_input:
+        sections.extend(["PREVIOUS_INPUT:", previous_input, ""])
+    sections.extend(["RUN_OUTPUT:", run_output, ""])
+    sections.extend(["Reachable next nodes:", next_nodes_json, ""])
+    sections.extend(["Recent conversation:", recent_context, ""])
+    sections.extend(["User message:", user_message])
+    return "\n".join(sections)
 
 
 if __name__ == "__main__":

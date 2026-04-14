@@ -51,6 +51,7 @@ def main(argv: list[str] | None = None) -> None:
                 _process_source,
                 config,
                 cli_args.target_date,
+                cli_args.node_prompt_path,
                 bot_token,
                 repo_root,
                 whisper_slots,
@@ -72,6 +73,7 @@ def main(argv: list[str] | None = None) -> None:
 def _process_source(
     config: FinanceConfig,
     requested_target_date,
+    node_prompt_path: str,
     bot_token: str,
     repo_root: Path,
     whisper_slots: Semaphore,
@@ -125,6 +127,8 @@ def _process_source(
                 repo_root=repo_root,
                 source_title=config.source.title,
                 source_author=config.source.author,
+                source_id=config.source.source_id,
+                node_prompt_path=node_prompt_path,
             )
         logger.info("Analysis completed: %s", note_path)
         logger.info("Sending Discord notification")

@@ -74,10 +74,6 @@ def execute_workflow(
             current = next_node
             continue
 
-        if current.send_response:
-            logger.info("Node %s send_response=true output_len=%s", current.id, len(result.output_text))
-            return result.output_text
-
         next_node = _first_enabled_successor(graph, current.id)
         if next_node is None:
             logger.info("Node %s has no matching successor; returning direct output", current.id)
@@ -103,22 +99,24 @@ def _execute_node(
         _run_hook(node.id, "pre_hook", node.pre_hook_path, node_input, repo_root)
 
     payload = dict(node_input)
-    if node.node_type == "router":
+    candidate_targets = [
+        {
+            "id": candidate.id,
+            "name": candidate.name,
+            "description": candidate.description or candidate.name,
+            "model_name": candidate.model_name,
+        }
+        for candidate in graph.candidate_targets(node.id)
+        if candidate.enabled
+    ]
+    if recent_context and "recent_context" not in payload:
         payload["recent_context"] = recent_context
-        payload["next_nodes"] = [
-            {
-                "id": candidate.id,
-                "name": candidate.name,
-                "description": candidate.description or candidate.name,
-                "model_name": candidate.model_name,
-            }
-            for candidate in graph.candidate_targets(node.id)
-            if candidate.enabled
-        ]
+    if candidate_targets and "next_nodes" not in payload:
+        payload["next_nodes"] = candidate_targets
 
     action_result = _execute_executor(node, payload, prev_output, repo_root)
     output_text = format_direct_node_reply(action_result)
-    decision = _parse_node_decision(action_result) if node.node_type == "router" else None
+    decision = _maybe_parse_node_decision(action_result)
     if decision and decision.decision == "reply":
         output_text = decision.reply
 
@@ -147,18 +145,18 @@ def _execute_node(
     )
 
 
-def _parse_node_decision(action_result: NodeActionResult) -> NodeDecision:
+def _maybe_parse_node_decision(action_result: NodeActionResult) -> NodeDecision | None:
     if action_result.returncode != 0:
-        raise RuntimeError(f"decision node '{action_result.node_id}' failed: {action_result.stderr[:200]}")
+        return None
     raw = action_result.stdout.strip()
     if not raw:
-        raise RuntimeError(f"decision node '{action_result.node_id}' returned empty output")
+        return None
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"decision node '{action_result.node_id}' returned invalid JSON") from exc
+    except json.JSONDecodeError:
+        return None
     if not isinstance(parsed, dict):
-        raise RuntimeError(f"decision node '{action_result.node_id}' returned non-object JSON")
+        return None
 
     decision = str(parsed.get("decision", "")).strip()
     if decision == "reply":
@@ -173,7 +171,7 @@ def _parse_node_decision(action_result: NodeActionResult) -> NodeDecision:
             next_node_id=str(parsed.get("next_node_id", "")).strip(),
             args=args if isinstance(args, dict) else {},
         )
-    raise RuntimeError(f"decision node '{action_result.node_id}' returned unsupported decision '{decision}'")
+    return None
 
 
 def _execute_executor(
@@ -192,10 +190,8 @@ def _execute_executor(
     payload = dict(node_input)
     if node.use_prev_output and prev_output and "prev_output" not in payload:
         payload["prev_output"] = prev_output
-    if node.system_prompt_path and "system_prompt_path" not in payload:
-        payload["system_prompt_path"] = node.system_prompt_path
-    if node.prompt_template_path and "prompt_template_path" not in payload:
-        payload["prompt_template_path"] = node.prompt_template_path
+    if node.node_prompt_path and "node_prompt_path" not in payload:
+        payload["node_prompt_path"] = node.node_prompt_path
     if node.model_name and "model_name" not in payload:
         payload["model_name"] = node.model_name
 
