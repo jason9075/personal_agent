@@ -66,6 +66,8 @@ class FinanceScheduler:
         cmd = ["python", "nodes/finance-report/run.py", "--workers", str(job.workers)]
         if job.source_id:
             cmd.extend(["--source", job.source_id])
+        if job.channel_id:
+            cmd.extend(["--notify-discord", "--channel-id", job.channel_id])
 
         completed = await asyncio.to_thread(
             subprocess.run,
@@ -92,7 +94,7 @@ class FinanceScheduler:
             message=output,
         )
 
-        if job.channel_id:
+        if job.channel_id and completed.returncode != 0:
             channel = self.client.get_channel(int(job.channel_id))
             if channel is not None:
                 prefix = f"排程 `{job.name}` 執行{'成功' if status == 'ok' else '失敗'}"

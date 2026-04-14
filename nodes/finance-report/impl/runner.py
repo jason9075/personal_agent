@@ -33,16 +33,20 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{source.source_id} | title={source.title}{author} | rss={source.rss_url}", flush=True)
         return
 
-    bot_token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-    if not bot_token:
-        raise RuntimeError("DISCORD_BOT_TOKEN not set")
-
     repo_root = Path(__file__).resolve().parents[3]
     configs = load_configs(cli_args.source_id)
     worker_count = min(cli_args.workers, len(configs))
     print(f"[finance] processing {len(configs)} source(s) with {worker_count} worker(s)", flush=True)
     whisper_slots = Semaphore(WHISPER_CONCURRENCY)
     codex_slots = Semaphore(CODEX_CONCURRENCY)
+    notify_channel_id = cli_args.channel_id.strip()
+    bot_token = ""
+    if cli_args.notify_discord:
+        bot_token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+        if not bot_token:
+            raise RuntimeError("DISCORD_BOT_TOKEN not set")
+        if not notify_channel_id:
+            raise RuntimeError("--channel-id is required when --notify-discord is enabled")
 
     had_error = False
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="finance") as executor:
@@ -53,6 +57,7 @@ def main(argv: list[str] | None = None) -> None:
                 cli_args.target_date,
                 cli_args.node_prompt_path,
                 bot_token,
+                notify_channel_id,
                 repo_root,
                 whisper_slots,
                 codex_slots,
@@ -75,6 +80,7 @@ def _process_source(
     requested_target_date,
     node_prompt_path: str,
     bot_token: str,
+    notify_channel_id: str,
     repo_root: Path,
     whisper_slots: Semaphore,
     codex_slots: Semaphore,
@@ -100,12 +106,10 @@ def _process_source(
         if note_path.exists():
             logger.info("Note already exists; sending without reprocessing: %s", note_path)
             markdown = note_path.read_text(encoding="utf-8").strip()
-            send_markdown_message(
-                bot_token,
-                config.channel_id,
-                _format_discord_message(config.source.title, selection.target_date.isoformat(), markdown),
-            )
-            return f"[finance] reused existing note for {config.source.source_id}: {note_path}"
+            message = _format_discord_message(config.source.title, selection.target_date.isoformat(), markdown)
+            if notify_channel_id:
+                send_markdown_message(bot_token, notify_channel_id, message)
+            return message
 
         logger.info("Starting media download stage")
         result = download_episode_media(config, selection)
@@ -131,30 +135,25 @@ def _process_source(
                 node_prompt_path=node_prompt_path,
             )
         logger.info("Analysis completed: %s", note_path)
-        logger.info("Sending Discord notification")
-        send_markdown_message(
-            bot_token,
-            config.channel_id,
-            _format_discord_message(config.source.title, selection.target_date.isoformat(), markdown),
-        )
-        logger.info("Discord notification sent to channel %s", config.channel_id)
-        return f"[finance] note written to {note_path}"
+        message = _format_discord_message(config.source.title, selection.target_date.isoformat(), markdown)
+        if notify_channel_id:
+            logger.info("Sending Discord notification")
+            send_markdown_message(bot_token, notify_channel_id, message)
+            logger.info("Discord notification sent to channel %s", notify_channel_id)
+        return message
     except EpisodeNotFoundError as exc:
         logger.exception("No matching episode was found")
-        if config.notify_on_no_episode:
-            send_markdown_message(
-                bot_token,
-                config.channel_id,
-                f"【{config.source.title}】指定日期沒有找到可處理的新集數。({exc})",
-            )
+        if config.notify_on_no_episode and notify_channel_id:
+            send_markdown_message(bot_token, notify_channel_id, f"【{config.source.title}】指定日期沒有找到可處理的新集數。({exc})")
         raise RuntimeError(f"{config.source.source_id}: no matching episode") from exc
     except Exception as exc:
         logger.exception("Finance report failed")
-        send_markdown_message(
-            bot_token,
-            config.channel_id,
-            f"【{config.source.title}】每日財經報告失敗：{type(exc).__name__}。請查看本地 log 後重試。",
-        )
+        if notify_channel_id:
+            send_markdown_message(
+                bot_token,
+                notify_channel_id,
+                f"【{config.source.title}】每日財經報告失敗：{type(exc).__name__}。請查看本地 log 後重試。",
+            )
         raise RuntimeError(f"{config.source.source_id}: {type(exc).__name__}") from exc
 
 

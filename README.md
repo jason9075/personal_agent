@@ -7,7 +7,7 @@ Private Discord bot for Jason Kuan built around a **node-first N-Pass Workflow E
 ```bash
 nix develop
 cp .env.example .env
-# fill in DISCORD_BOT_TOKEN, ALLOWED_USER_ID, FINANCE_REPORT_CHANNEL_ID
+# fill in DISCORD_BOT_TOKEN, ALLOWED_USER_ID
 just bot
 ```
 

@@ -47,7 +47,6 @@ class FinanceSource:
 @dataclass(frozen=True)
 class FinanceConfig:
     source: FinanceSource
-    channel_id: str
     download_dir: Path
     transcript_dir: Path
     notes_dir: Path
@@ -126,7 +125,6 @@ def load_config(selected_source_id: str = "") -> FinanceConfig:
 
     return FinanceConfig(
         source=source,
-        channel_id=_get_required("FINANCE_REPORT_CHANNEL_ID"),
         download_dir=base_download_dir / source.slug,
         transcript_dir=base_transcript_dir / source.slug,
         notes_dir=base_notes_dir / source.slug,
