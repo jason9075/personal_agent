@@ -1,14 +1,20 @@
 'use strict';
 
-const PASS_PALETTE = {
-  1: { title: '#3B4F6E', body: '#2E3440', badge: '#81A1C1' },
-  2: { title: '#3D5248', body: '#2E3440', badge: '#A3BE8C' },
-  3: { title: '#5A3F35', body: '#2E3440', badge: '#D08770' },
+const MODEL_PALETTE = {
+  'gpt-5.4': { title: '#315c72', body: '#101c24', badge: '#6bc7f0' },
+  'gpt-5.4-mini': { title: '#44613d', body: '#162114', badge: '#97d67d' },
+  'gpt-5.3-codex': { title: '#6b4b2a', body: '#24180f', badge: '#f0b36b' },
+  'gpt-5.2': { title: '#5b4068', body: '#1d1323', badge: '#c592e3' },
 };
-const PASS_PALETTE_DEFAULT = { title: '#4A3D56', body: '#2E3440', badge: '#B48EAD' };
+const MODEL_PALETTE_DEFAULT = { title: '#465063', body: '#141923', badge: '#9bb0d1' };
 
-function passColors(idx) {
-  return PASS_PALETTE[idx] || PASS_PALETTE_DEFAULT;
+function modelColors(modelName) {
+  return MODEL_PALETTE[modelName] || MODEL_PALETTE_DEFAULT;
+}
+
+function shortModelName(modelName) {
+  const text = modelName || 'gpt-5.4';
+  return text.replace(/^gpt-/, '');
 }
 
 const S = {
@@ -55,8 +61,7 @@ function registerNodeType() {
     this.properties = {
       node_id: '',
       name: '',
-      node_type: 'agent',
-      pass_index: 1,
+      model_name: 'gpt-5.4',
       enabled: true,
       start_node: false,
       send_response: false,
@@ -68,7 +73,7 @@ function registerNodeType() {
   WorkflowNodeView.title = 'Node';
 
   WorkflowNodeView.prototype._applyColors = function _applyColors() {
-    const pal = passColors(this.properties.pass_index);
+    const pal = modelColors(this.properties.model_name);
     this.color = this.properties.enabled ? pal.title : '#2a2a2a';
     this.bgcolor = this.properties.enabled ? pal.body : '#1a1a1a';
   };
@@ -97,8 +102,7 @@ function registerNodeType() {
       badgeX += w + 6;
     }
 
-    drawBadge(`P${this.properties.pass_index}`, passColors(this.properties.pass_index).badge);
-    drawBadge(this.properties.node_type.toUpperCase(), '#5E81AC');
+    drawBadge(shortModelName(this.properties.model_name), modelColors(this.properties.model_name).badge);
     if (this.properties.start_node) drawBadge('START', '#BF616A');
     if (this.properties.send_response) drawBadge('RESP', '#A3BE8C');
 
@@ -192,12 +196,12 @@ async function loadGraph() {
     S.lnodeToDbId = {};
     S._prevLinkIds = new Set();
 
-    const nodeMap = {};
-    const colWidth = 320;
+    const colWidth = 340;
     const rowHeight = 150;
     const margin = 60;
+    const nodeMap = {};
     const sortedNodes = layoutSortedNodes(data.nodes);
-    const rowIndexByPass = new Map();
+    const layout = computeNodeLayout(data.nodes, data.edges);
 
     sortedNodes.forEach(node => {
       const lnode = LiteGraph.createNode('workflow/node');
@@ -205,19 +209,15 @@ async function loadGraph() {
       lnode.properties = {
         node_id: node.id,
         name: node.name,
-        node_type: node.node_type,
-        pass_index: node.pass_index,
+        model_name: node.model_name || 'gpt-5.4',
         enabled: node.enabled,
         start_node: node.start_node,
         send_response: node.send_response,
         hooks: node.hooks || {},
       };
       lnode._applyColors();
-
-      const passColumn = Math.max(0, (node.pass_index || 1) - 1);
-      const rowIndex = rowIndexByPass.get(node.pass_index) || 0;
-      lnode.pos = [margin + (passColumn * colWidth), margin + (rowIndex * rowHeight)];
-      rowIndexByPass.set(node.pass_index, rowIndex + 1);
+      const pos = layout.get(node.id) || { depth: 0, row: 0 };
+      lnode.pos = [margin + (pos.depth * colWidth), margin + (pos.row * rowHeight)];
       S.graph.add(lnode);
       nodeMap[node.id] = lnode;
       S.lnodeToDbId[lnode.id] = node.id;
@@ -251,21 +251,71 @@ function layoutSortedNodes(nodes) {
     if (!!a.start_node !== !!b.start_node) {
       return a.start_node ? -1 : 1;
     }
-    if ((a.pass_index || 0) !== (b.pass_index || 0)) {
-      return (a.pass_index || 0) - (b.pass_index || 0);
-    }
-    if ((a.node_type || '') !== (b.node_type || '')) {
-      if (a.node_type === 'router') return -1;
-      if (b.node_type === 'router') return 1;
+    if ((a.model_name || '') !== (b.model_name || '')) {
+      return (a.model_name || '').localeCompare(b.model_name || '');
     }
     return (a.id || '').localeCompare(b.id || '');
   });
 }
 
 function updateBadge() {
-  const maxPass = S.graphData.nodes.reduce((acc, node) => Math.max(acc, node.pass_index), 0);
+  const models = new Set(S.graphData.nodes.map(node => node.model_name || 'gpt-5.4'));
   document.getElementById('graph-badge').textContent =
-    `${S.graphData.nodes.length} nodes · ${S.graphData.edges.length} edges · ${maxPass} passes`;
+    `${S.graphData.nodes.length} nodes · ${S.graphData.edges.length} edges · ${models.size} models`;
+}
+
+function computeNodeLayout(nodes, edges) {
+  const outgoing = new Map();
+  const incoming = new Map();
+  nodes.forEach(node => {
+    outgoing.set(node.id, []);
+    incoming.set(node.id, []);
+  });
+  edges.forEach(edge => {
+    if (outgoing.has(edge.from_node_id)) outgoing.get(edge.from_node_id).push(edge.to_node_id);
+    if (incoming.has(edge.to_node_id)) incoming.get(edge.to_node_id).push(edge.from_node_id);
+  });
+
+  const startNodes = nodes.filter(node => node.start_node);
+  const queue = startNodes.map(node => ({ id: node.id, depth: 0 }));
+  const depths = new Map();
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) break;
+    const prevDepth = depths.get(current.id);
+    if (prevDepth !== undefined && prevDepth <= current.depth) continue;
+    depths.set(current.id, current.depth);
+    (outgoing.get(current.id) || []).forEach(nextId => {
+      queue.push({ id: nextId, depth: current.depth + 1 });
+    });
+  }
+
+  let fallbackDepth = Math.max(0, ...depths.values(), 0) + 1;
+  nodes.forEach(node => {
+    if (!depths.has(node.id)) {
+      depths.set(node.id, node.start_node ? 0 : fallbackDepth);
+      fallbackDepth += 1;
+    }
+  });
+
+  const grouped = new Map();
+  nodes.forEach(node => {
+    const depth = depths.get(node.id) || 0;
+    if (!grouped.has(depth)) grouped.set(depth, []);
+    grouped.get(depth).push(node);
+  });
+
+  const layout = new Map();
+  [...grouped.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .forEach(([depth, groupedNodes]) => {
+      groupedNodes
+        .sort((a, b) => (a.id || '').localeCompare(b.id || ''))
+        .forEach((node, row) => {
+          layout.set(node.id, { depth, row });
+        });
+    });
+  return layout;
 }
 
 function onConnectionChange() {
@@ -360,11 +410,9 @@ function renderNodeEditor(lnode) {
   setValue('ne-node-id', node.id, true);
   setValue('ne-name', node.name || '');
   setValue('ne-description', node.description || '');
-  setValue('ne-node-type', node.node_type || 'agent');
-  setValue('ne-pass-index', String(node.pass_index || 1));
+  setValue('ne-model-name', node.model_name || 'gpt-5.4');
   document.getElementById('ne-enabled').checked = !!node.enabled;
   document.getElementById('ne-start-node').checked = !!node.start_node;
-  document.getElementById('ne-send-response').checked = !!node.send_response;
   document.getElementById('ne-use-prev-output').checked = !!node.use_prev_output;
   setValue('ne-executor-path', node.executor_path || '');
   setValue('ne-pre-hook-path', node.pre_hook_path || '');
@@ -418,12 +466,12 @@ async function renderNodeDetails(node, hooks = {}) {
   const detail = await POST('/api/node-details-preview', node);
 
   setText('dm-name', node.name || '(empty)');
-  setText('dm-pass-index', `Pass ${node.pass_index ?? '-'}`);
+  setText('dm-model-name', node.model_name || 'gpt-5.4');
   setPre('dm-description', node.description || '(empty)');
   setText('dm-timeout', `${node.timeout_seconds ?? 0}s`);
   setPre('dm-system-prompt-path', detail.system_prompt_path || '(none)');
-  setPre('dm-allowed-tools', (detail.resolved_tools || []).length ? detail.resolved_tools.join('\n') : '(none)');
-  setPre('dm-system-prompt', detail.system_prompt || '(empty)');
+  setCode('dm-allowed-tools', (detail.resolved_tools || []).length ? detail.resolved_tools.join('\n') : '(none)', 'text');
+  setMarkdown('dm-system-prompt', detail.system_prompt || '(empty)');
   setPre('dm-preview-prompt', detail.preview_prompt || '(empty)');
   setCode('dm-pre-hook-code', detail.execution_code.pre_hook || '(none)');
   setCode('dm-run-code', detail.execution_code.run || '(none)');
@@ -477,11 +525,10 @@ function collectNodeForm(nodeId) {
     id: nodeId,
     name: document.getElementById('ne-name').value.trim(),
     description: document.getElementById('ne-description').value.trim(),
-    node_type: document.getElementById('ne-node-type').value,
-    pass_index: parseInt(document.getElementById('ne-pass-index').value, 10),
+    model_name: document.getElementById('ne-model-name').value,
     enabled: document.getElementById('ne-enabled').checked,
     start_node: document.getElementById('ne-start-node').checked,
-    send_response: document.getElementById('ne-send-response').checked,
+    send_response: true,
     use_prev_output: document.getElementById('ne-use-prev-output').checked,
     executor_path: document.getElementById('ne-executor-path').value.trim(),
     pre_hook_path: blankToNull(document.getElementById('ne-pre-hook-path').value),
@@ -505,11 +552,9 @@ function bindDraftInputs() {
   [
     'ne-name',
     'ne-description',
-    'ne-node-type',
-    'ne-pass-index',
+    'ne-model-name',
     'ne-enabled',
     'ne-start-node',
-    'ne-send-response',
     'ne-use-prev-output',
     'ne-executor-path',
     'ne-pre-hook-path',
@@ -555,11 +600,10 @@ function collectNodeFormLoose(nodeId) {
     id: nodeId,
     name: document.getElementById('ne-name').value.trim(),
     description: document.getElementById('ne-description').value.trim(),
-    node_type: document.getElementById('ne-node-type').value,
-    pass_index: parseInt(document.getElementById('ne-pass-index').value || '1', 10),
+    model_name: document.getElementById('ne-model-name').value,
     enabled: document.getElementById('ne-enabled').checked,
     start_node: document.getElementById('ne-start-node').checked,
-    send_response: document.getElementById('ne-send-response').checked,
+    send_response: true,
     use_prev_output: document.getElementById('ne-use-prev-output').checked,
     executor_path: document.getElementById('ne-executor-path').value.trim(),
     pre_hook_path: blankToNull(document.getElementById('ne-pre-hook-path').value),
@@ -622,9 +666,13 @@ function setPre(id, value) {
   document.getElementById(id).textContent = value;
 }
 
-function setCode(id, value) {
+function setMarkdown(id, value) {
+  document.getElementById(id).innerHTML = renderMarkdown(value);
+}
+
+function setCode(id, value, forcedLanguage = '') {
   const el = document.getElementById(id);
-  const detected = detectCodeLanguage(value);
+  const detected = forcedLanguage || detectCodeLanguage(value);
   el.innerHTML = renderHighlightedCode(value, detected);
 }
 
@@ -647,6 +695,7 @@ function detectCodeLanguage(source) {
 
 function renderHighlightedCode(source, language) {
   const escaped = escapeHtml(source || '');
+  if (language === 'text') return withLangBadge(escaped, language);
   if (language === 'python') return withLangBadge(highlightPython(escaped), language);
   if (language === 'javascript') return withLangBadge(highlightJavaScript(escaped), language);
   if (language === 'json') return withLangBadge(highlightJson(escaped), language);
@@ -703,6 +752,117 @@ function highlightSql(text) {
   return html;
 }
 
+function renderMarkdown(source) {
+  const text = source || '';
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const parts = [];
+  let inList = false;
+  let inQuote = false;
+  let inCode = false;
+  let codeLang = '';
+  let codeBuffer = [];
+
+  function closeList() {
+    if (inList) {
+      parts.push('</ul>');
+      inList = false;
+    }
+  }
+
+  function closeQuote() {
+    if (inQuote) {
+      parts.push('</blockquote>');
+      inQuote = false;
+    }
+  }
+
+  function closeCode() {
+    if (!inCode) return;
+    const codeText = codeBuffer.join('\n');
+    parts.push(`<pre class="md-code code-viewer"><code>${renderHighlightedCode(codeText, codeLang || detectCodeLanguage(codeText))}</code></pre>`);
+    inCode = false;
+    codeLang = '';
+    codeBuffer = [];
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('```')) {
+      if (inCode) {
+        closeCode();
+      } else {
+        closeList();
+        closeQuote();
+        inCode = true;
+        codeLang = trimmed.slice(3).trim().toLowerCase();
+      }
+      continue;
+    }
+
+    if (inCode) {
+      codeBuffer.push(line);
+      continue;
+    }
+
+    if (!trimmed) {
+      closeList();
+      closeQuote();
+      parts.push('<div class="md-spacer"></div>');
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      closeQuote();
+      const level = Math.min(6, heading[1].length);
+      parts.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    if (trimmed.startsWith('>')) {
+      closeList();
+      if (!inQuote) {
+        parts.push('<blockquote>');
+        inQuote = true;
+      }
+      parts.push(`<p>${renderInlineMarkdown(trimmed.replace(/^>\s?/, ''))}</p>`);
+      continue;
+    }
+
+    const listItem = trimmed.match(/^[-*]\s+(.*)$/);
+    if (listItem) {
+      closeQuote();
+      if (!inList) {
+        parts.push('<ul>');
+        inList = true;
+      }
+      parts.push(`<li>${renderInlineMarkdown(listItem[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    closeQuote();
+    parts.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+  }
+
+  closeCode();
+  closeList();
+  closeQuote();
+
+  return parts.join('') || '<p>(empty)</p>';
+}
+
+function renderInlineMarkdown(text) {
+  let html = escapeHtml(text || '');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  return html;
+}
+
 function formatFlags(node) {
   const flags = [];
   if (node.enabled) flags.push('enabled');
@@ -744,25 +904,20 @@ function applyDraftToCanvas(nodeId, draft) {
     ...lnode.properties,
     node_id: nodeId,
     name: draft.name || nodeId,
-    node_type: draft.node_type || 'agent',
-    pass_index: draft.pass_index || 1,
+    model_name: draft.model_name || 'gpt-5.4',
     enabled: !!draft.enabled,
     start_node: !!draft.start_node,
     send_response: !!draft.send_response,
     hooks: lnode.properties.hooks || {},
   };
   lnode._applyColors();
-
-  const passColumn = Math.max(0, (draft.pass_index || 1) - 1);
-  lnode.pos = [60 + (passColumn * 320), lnode.pos[1]];
   S.canvas.setDirty(true, true);
 }
 
 function openModal() {
   document.getElementById('modal-node-id').value = '';
   document.getElementById('modal-name').value = '';
-  document.getElementById('modal-node-type').value = 'agent';
-  document.getElementById('modal-pass').value = '2';
+  document.getElementById('modal-model-name').value = 'gpt-5.4';
   document.getElementById('modal').classList.remove('hidden');
 }
 
@@ -777,8 +932,9 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
     await PUT(`/api/nodes/${nodeId}`, {
       name: document.getElementById('modal-name').value.trim() || nodeId,
       description: '',
-      node_type: document.getElementById('modal-node-type').value,
-      pass_index: parseInt(document.getElementById('modal-pass').value, 10),
+      model_name: document.getElementById('modal-model-name').value,
+      node_type: 'agent',
+      pass_index: 1,
       enabled: true,
       start_node: false,
       send_response: true,

@@ -3,25 +3,20 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import GEMINI_TOOL_MODEL
 from .logging_utils import get_logger
-from .nodes import (
-    NodeActionResult,
-    _route_finance_report_direct,
-    _route_finance_schedule_direct,
-    format_direct_node_reply,
-)
-from .prompts import load_prompt, load_prompt_path
-from .workflow_db import WorkflowEdge, WorkflowGraph, WorkflowNode, load_workflow_graph, try_pattern_route
+from .nodes import NodeActionResult, format_direct_node_reply
+from .workflow_db import WorkflowEdge, WorkflowGraph, WorkflowNode, load_workflow_graph
 
 
 @dataclass(frozen=True)
-class RouteDecision:
-    next_node_id: str
-    args: dict
+class NodeDecision:
+    decision: str
+    reply: str = ""
+    next_node_id: str = ""
+    args: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -29,7 +24,7 @@ class NodeExecutionResult:
     node_id: str
     output_text: str
     action_result: NodeActionResult | None = None
-    route_decision: RouteDecision | None = None
+    decision: NodeDecision | None = None
 
 
 def execute_workflow(
@@ -51,7 +46,7 @@ def execute_workflow(
     prev_output = ""
 
     while current:
-        logger.info("Executing node id=%s type=%s", current.id, current.node_type)
+        logger.info("Executing node id=%s model=%s", current.id, current.model_name)
         result = _execute_node(
             current,
             graph,
@@ -62,20 +57,26 @@ def execute_workflow(
             recent_context=recent_context,
         )
 
+        if result.decision is not None:
+            if result.decision.decision == "reply":
+                reply = result.decision.reply.strip() or "目前沒有可回覆的內容。"
+                logger.info("Decision node %s replied directly output_len=%s", current.id, len(reply))
+                return reply
+
+            next_node = graph.node_by_id(result.decision.next_node_id)
+            if next_node is None or not next_node.enabled:
+                raise RuntimeError(f"node '{current.id}' selected unknown or disabled next node '{result.decision.next_node_id}'")
+            if next_node.id not in {candidate.id for candidate in graph.candidate_targets(current.id)}:
+                raise RuntimeError(f"node '{current.id}' selected unreachable next node '{next_node.id}'")
+
+            prev_output = result.output_text
+            current_input = {"message": user_msg, "channel_id": channel_id, **result.decision.args}
+            current = next_node
+            continue
+
         if current.send_response:
             logger.info("Node %s send_response=true output_len=%s", current.id, len(result.output_text))
             return result.output_text
-
-        if current.node_type == "router":
-            if result.route_decision is None:
-                raise RuntimeError(f"router node '{current.id}' produced no route decision")
-            next_node = graph.node_by_id(result.route_decision.next_node_id)
-            if next_node is None:
-                raise RuntimeError(f"router selected unknown node '{result.route_decision.next_node_id}'")
-            prev_output = result.output_text
-            current_input = dict(result.route_decision.args)
-            current = next_node
-            continue
 
         next_node = _select_successor(graph, current.id, result.action_result)
         if next_node is None:
@@ -98,14 +99,28 @@ def _execute_node(
     *,
     recent_context: str = "",
 ) -> NodeExecutionResult:
-    if node.node_type == "router":
-        return _execute_router_node(node, graph, user_msg, recent_context=recent_context)
-
     if node.pre_hook_path:
         _run_hook(node.id, "pre_hook", node.pre_hook_path, node_input, repo_root)
 
-    action_result = _execute_executor(node, node_input, prev_output, repo_root)
+    payload = dict(node_input)
+    if node.node_type == "router":
+        payload["recent_context"] = recent_context
+        payload["next_nodes"] = [
+            {
+                "id": candidate.id,
+                "name": candidate.name,
+                "description": candidate.route_description or candidate.description or candidate.name,
+                "model_name": candidate.model_name,
+            }
+            for candidate in graph.candidate_targets(node.id)
+            if candidate.enabled
+        ]
+
+    action_result = _execute_executor(node, payload, prev_output, repo_root)
     output_text = format_direct_node_reply(action_result)
+    decision = _parse_node_decision(action_result) if node.node_type == "router" else None
+    if decision and decision.decision == "reply":
+        output_text = decision.reply
 
     if node.post_hook_path:
         post_result = _run_hook(
@@ -113,7 +128,7 @@ def _execute_node(
             "post_hook",
             node.post_hook_path,
             {
-                "input": node_input,
+                "input": payload,
                 "prev_output": prev_output,
                 "stdout": action_result.stdout,
                 "stderr": action_result.stderr,
@@ -128,126 +143,37 @@ def _execute_node(
         node_id=node.id,
         output_text=output_text,
         action_result=action_result,
+        decision=decision,
     )
 
 
-def _execute_router_node(
-    node: WorkflowNode,
-    graph: WorkflowGraph,
-    user_msg: str,
-    *,
-    recent_context: str = "",
-) -> NodeExecutionResult:
-    logger = get_logger()
-    candidates = [candidate for candidate in graph.candidate_targets(node.id) if candidate.enabled]
-    if not candidates:
-        raise RuntimeError(f"router node '{node.id}' has no enabled outgoing candidates")
-
-    direct_candidates = sorted(candidates, key=_direct_route_priority)
-    for candidate in direct_candidates:
-        args = _try_direct_route(candidate, user_msg)
-        if args is not None:
-            logger.info("Direct route matched next_node=%s args=%s", candidate.id, args)
-            return NodeExecutionResult(
-                node_id=node.id,
-                output_text=json.dumps(
-                    {"next_node_id": candidate.id, "args": args},
-                    ensure_ascii=False,
-                ),
-                route_decision=RouteDecision(next_node_id=candidate.id, args=args),
-            )
-
-    decision = _llm_route(node, candidates, user_msg, recent_context)
-    if decision is None:
-        fallback = next((candidate for candidate in candidates if candidate.id == "general-reply"), None)
-        if fallback is None:
-            raise RuntimeError(f"router node '{node.id}' could not choose a next node")
-        decision = RouteDecision(next_node_id=fallback.id, args={"message": user_msg})
-
-    logger.info("Router selected next_node=%s args=%s", decision.next_node_id, decision.args)
-    return NodeExecutionResult(
-        node_id=node.id,
-        output_text=json.dumps(
-            {"next_node_id": decision.next_node_id, "args": decision.args},
-            ensure_ascii=False,
-        ),
-        route_decision=decision,
-    )
-
-
-def _try_direct_route(node: WorkflowNode, user_msg: str) -> dict | None:
-    if node.id == "finance-schedule" or node.id.endswith(":finance-schedule"):
-        result = _route_finance_schedule_direct(user_msg)
-        if result:
-            return result.get("args", {})
-
-    if node.id == "finance-report" or node.id.endswith(":finance-report"):
-        result = _route_finance_report_direct(user_msg)
-        if result:
-            return result.get("args", {})
-
-    return try_pattern_route(node, user_msg)
-
-
-def _direct_route_priority(node: WorkflowNode) -> tuple[int, str]:
-    if node.id == "finance-schedule" or node.id.endswith(":finance-schedule"):
-        return (0, node.id)
-    if node.id == "finance-report" or node.id.endswith(":finance-report"):
-        return (1, node.id)
-    if node.router_mode == "direct_regex":
-        return (2, node.id)
-    return (3, node.id)
-
-
-def _llm_route(
-    router_node: WorkflowNode,
-    candidates: list[WorkflowNode],
-    user_msg: str,
-    recent_context: str,
-) -> RouteDecision | None:
-    logger = get_logger()
-    if not GEMINI_TOOL_MODEL:
-        logger.info("No GEMINI_TOOL_MODEL configured; router LLM disabled")
-        return None
-
-    tool_lines = "\n".join(
-        f"- {candidate.id}: {(candidate.route_description or candidate.description or candidate.name).strip()}"
-        for candidate in candidates
-    )
-    context_block = (
-        f"Recent conversation (use this to extract query details when needed):\n{recent_context}\n\n"
-        if recent_context
-        else ""
-    )
-    system_prompt = load_prompt_path(router_node.system_prompt_path).strip()
-    template = load_prompt("tool_router.md")
-    prompt = template.format(
-        tool_lines=tool_lines,
-        context_block=context_block,
-        user_msg=user_msg,
-    )
-    if system_prompt:
-        prompt = f"{system_prompt}\n\n{prompt}"
-
-    cmd = ["gemini", "--model", GEMINI_TOOL_MODEL, "-p", prompt]
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd="/tmp", check=False)
-    if proc.returncode != 0:
-        logger.warning("Router LLM error: %s", proc.stderr.strip()[:200])
-        return None
-
-    raw = proc.stdout.strip()
-    raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+def _parse_node_decision(action_result: NodeActionResult) -> NodeDecision:
+    if action_result.returncode != 0:
+        raise RuntimeError(f"decision node '{action_result.node_id}' failed: {action_result.stderr[:200]}")
+    raw = action_result.stdout.strip()
+    if not raw:
+        raise RuntimeError(f"decision node '{action_result.node_id}' returned empty output")
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Router LLM parse failure: %s", raw[:200])
-        return None
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"decision node '{action_result.node_id}' returned invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"decision node '{action_result.node_id}' returned non-object JSON")
 
-    next_node_id = str(parsed.get("tool", "")).strip()
-    if next_node_id not in {candidate.id for candidate in candidates}:
-        return None
-    args = parsed.get("args", {})
-    return RouteDecision(next_node_id=next_node_id, args=args if isinstance(args, dict) else {})
+    decision = str(parsed.get("decision", "")).strip()
+    if decision == "reply":
+        return NodeDecision(
+            decision="reply",
+            reply=str(parsed.get("reply", "")).strip(),
+        )
+    if decision == "use_next_node":
+        args = parsed.get("args", {})
+        return NodeDecision(
+            decision="use_next_node",
+            next_node_id=str(parsed.get("next_node_id", "")).strip(),
+            args=args if isinstance(args, dict) else {},
+        )
+    raise RuntimeError(f"decision node '{action_result.node_id}' returned unsupported decision '{decision}'")
 
 
 def _execute_executor(
@@ -270,6 +196,8 @@ def _execute_executor(
         payload["system_prompt_path"] = node.system_prompt_path
     if node.prompt_template_path and "prompt_template_path" not in payload:
         payload["prompt_template_path"] = node.prompt_template_path
+    if node.model_name and "model_name" not in payload:
+        payload["model_name"] = node.model_name
 
     result = subprocess.run(
         ["python", str(run_py), "--args-json", json.dumps(payload, ensure_ascii=False)],

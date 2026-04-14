@@ -34,6 +34,8 @@ def analyze_transcript(
 
     cmd = [
         "codex",
+        "-m",
+        codex_model or "gpt-5.4",
         "exec",
         "--skip-git-repo-check",
         "--sandbox",
@@ -43,9 +45,6 @@ def analyze_transcript(
         "-C",
         str(repo_root),
     ]
-    if codex_model:
-        cmd.extend(["--model", codex_model])
-
     logger.info("Running codex exec for analysis")
     completed = subprocess.run(
         cmd,

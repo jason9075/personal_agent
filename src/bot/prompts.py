@@ -3,19 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import NODE_PROMPT_DIR, PROMPT_DIR
-
-
-def load_prompt(name: str) -> str:
-    """Read a bot prompt file on demand."""
-    path = PROMPT_DIR / name
-    if not path.exists():
-        raise RuntimeError(f"prompt not found: {path}")
-    return path.read_text(encoding="utf-8")
+from .config import NODES_DIR
 
 
 def load_prompt_path(path_str: str | None) -> str:
-    """Read a node prompt from a repo-relative path on demand."""
+    """Read a prompt from an absolute or repo-relative path on demand."""
     if not path_str:
         return ""
 
@@ -25,7 +17,7 @@ def load_prompt_path(path_str: str | None) -> str:
     else:
         path = raw_path
         if not path.exists():
-            path = NODE_PROMPT_DIR / raw_path
+            path = NODES_DIR.parents[0] / raw_path
 
     if not path.exists():
         raise RuntimeError(f"prompt not found: {path}")

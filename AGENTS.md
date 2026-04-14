@@ -9,7 +9,7 @@
 ### N-Pass Engine
 
 ```text
-message -> start_node -> route by outgoing edges -> node lifecycle -> Discord reply?
+message -> start_node -> decision node reply or next node -> node lifecycle -> Discord reply?
 ```
 
 Node lifecycle:
@@ -21,8 +21,9 @@ pre_hook.py? -> run.py -> post_hook.py?
 Core rules:
 
 - `start_node` is unique and is usually the intent router.
-- Route nodes may only choose nodes reachable through enabled outgoing edges.
-- Nodes control prompt, tooling, hooks, and `send_response`.
+- Decision nodes may only choose nodes reachable through enabled outgoing edges.
+- Nodes control prompt paths, tooling, hooks, timeout, and `model_name`.
+- `model_name` defaults to `gpt-5.4`; the DAG UI colors nodes by model, not by pass index.
 - Hook files are discovered by scanning the node directory for `pre_hook.py`, `run.py`, and `post_hook.py`.
 - Prompt bodies live in repo `.md` files. The workflow DB stores prompt file paths, not long prompt text blobs.
 
@@ -30,13 +31,16 @@ Key modules:
 
 | File | Role |
 |------|------|
-| `src/bot/engine.py` | workflow execution loop, router behavior, node lifecycle |
-| `src/bot/workflow_db.py` | SQLite schema, migrations, node/edge CRUD, hook scanning |
-| `src/bot/nodes.py` | shared route parsing and node execution helpers |
+| `src/bot/engine.py` | workflow execution loop, decision behavior, node lifecycle |
+| `src/bot/workflow_db.py` | SQLite schema, seed workflow, node/edge CRUD, hook scanning |
+| `src/bot/nodes.py` | shared execution helpers |
 | `src/bot/bot.py` | Discord event handler + FastAPI server |
 | `src/web/app.py` | REST API for DAG management |
 | `src/web/static/app.js` | LiteGraph DAG editor |
 | `nodes/*/run.py` | node executors |
+| `nodes/intent-router/` | top-level intent router assets |
+| `nodes/finance/` | finance domain decision node and source catalog |
+| `nodes/finance-report/` | finance node prompts and generated notes |
 | `nodes/finance-report/impl/` | finance RSS pipeline, STT, digest |
 
 ## Module Organisation
@@ -44,7 +48,9 @@ Key modules:
 - `src/bot/` — bot runtime, engine, workflow DB, scheduler, prompts
 - `src/web/` — FastAPI app, templates, static files
 - `nodes/*/` — executor scripts and node-local pipelines
-- `config/` — local finance source config
+- `nodes/intent-router/` — top-level decision node
+- `nodes/finance/` — finance decision node and local source catalog
+- `nodes/finance-report/notes/` — generated finance notes per source
 - `db/` — runtime SQLite state, git-ignored
 
 Keep workflow semantics in `src/bot/engine.py` and `src/bot/workflow_db.py`. Keep node-specific work in executor scripts, not in the Discord event handler.
@@ -88,5 +94,5 @@ Use Conventional Commits such as `feat:`, `fix:`, `refactor:`, `chore:`.
 ## Security
 
 - Never commit `.env`, real tokens, or private feed configuration.
-- `db/`, `.local/`, and `notes/finance/` are runtime artifacts and must stay out of git.
+- `db/`, `.local/`, and `nodes/finance-report/notes/` are runtime artifacts and must stay out of git.
 - `ALLOWED_USER_ID` is the only user allowed to trigger Discord replies.

@@ -37,6 +37,7 @@ class FinanceSource:
     title: str
     author: str
     rss_url: str
+    aliases: tuple[str, ...] = ()
 
     @property
     def slug(self) -> str:
@@ -118,7 +119,7 @@ def load_config(selected_source_id: str = "") -> FinanceConfig:
     source = _load_selected_source(selected_source_id)
     base_download_dir = Path(_get_optional("FINANCE_DOWNLOAD_DIR", ".local/finance/downloads"))
     base_transcript_dir = Path(_get_optional("FINANCE_TRANSCRIPT_DIR", ".local/finance/transcripts"))
-    base_notes_dir = Path(_get_optional("FINANCE_OUTPUT_DIR", "notes/finance"))
+    base_notes_dir = Path(_get_optional("FINANCE_OUTPUT_DIR", "nodes/finance-report/notes"))
     base_codex_output_dir = Path(_get_optional("FINANCE_CODEX_OUTPUT_DIR", ".local/finance/codex"))
     base_log_dir = Path(_get_optional("FINANCE_LOG_DIR", ".local/finance/logs"))
     base_debug_dir = Path(_get_optional("FINANCE_DEBUG_DIR", ".local/finance/debug"))
@@ -150,7 +151,7 @@ def load_config(selected_source_id: str = "") -> FinanceConfig:
 
 
 def list_available_sources() -> list[FinanceSource]:
-    sources_file = Path(_get_optional("FINANCE_SOURCES_FILE", "config/finance_sources.toml"))
+    sources_file = resolve_sources_file()
     if not sources_file.exists():
         return []
     return _load_sources_file(sources_file)
@@ -159,10 +160,10 @@ def list_available_sources() -> list[FinanceSource]:
 def load_configs(selected_source_id: str = "") -> list[FinanceConfig]:
     sources = list_available_sources()
     if not sources:
-        sources_file = Path(_get_optional("FINANCE_SOURCES_FILE", "config/finance_sources.toml"))
+        sources_file = resolve_sources_file()
         raise RuntimeError(
             f"finance sources file not found: {sources_file}. "
-            "Create it from config/finance_sources.example.toml."
+            "Create it from nodes/finance/sources.example.toml."
         )
 
     if selected_source_id:
@@ -177,12 +178,12 @@ def load_configs(selected_source_id: str = "") -> list[FinanceConfig]:
 
 def _load_selected_source(selected_source_id: str) -> FinanceSource:
     explicit_source_id = selected_source_id or _get_optional("FINANCE_SOURCE_ID")
-    sources_file = Path(_get_optional("FINANCE_SOURCES_FILE", "config/finance_sources.toml"))
+    sources_file = resolve_sources_file()
 
     if not sources_file.exists():
         raise RuntimeError(
             f"finance sources file not found: {sources_file}. "
-            "Create it from config/finance_sources.example.toml."
+            "Create it from nodes/finance/sources.example.toml."
         )
 
     sources = _load_sources_file(sources_file)
@@ -217,6 +218,14 @@ def _load_sources_file(path: Path) -> list[FinanceSource]:
         title = str(raw_source.get("title", "")).strip()
         author = str(raw_source.get("author", "")).strip()
         rss_url = str(raw_source.get("rss_url", "")).strip()
+        raw_aliases = raw_source.get("aliases", [])
+        if isinstance(raw_aliases, str):
+            raw_aliases = [raw_aliases]
+        aliases = tuple(
+            str(item).strip()
+            for item in raw_aliases
+            if str(item).strip()
+        )
         if not source_id or not title or not rss_url:
             raise RuntimeError(
                 f"{path} sources entry #{index} must include id, title, and rss_url"
@@ -227,6 +236,57 @@ def _load_sources_file(path: Path) -> list[FinanceSource]:
                 title=title,
                 author=author,
                 rss_url=rss_url,
+                aliases=aliases,
             )
         )
     return sources
+
+
+def resolve_sources_file() -> Path:
+    explicit = _get_optional("FINANCE_SOURCES_FILE")
+    if explicit:
+        return Path(explicit)
+
+    preferred = Path("nodes/finance/sources.toml")
+    if preferred.exists():
+        return preferred
+
+    legacy = Path("config/finance_sources.toml")
+    if legacy.exists():
+        return legacy
+
+    return preferred
+
+
+def match_source_from_text(text: str, sources: list[FinanceSource]) -> FinanceSource | None:
+    normalized_text = _normalize_match_text(text)
+    if not normalized_text:
+        return None
+
+    for source in sources:
+        if _normalize_match_text(source.source_id) == normalized_text:
+            return source
+
+    best: tuple[int, FinanceSource] | None = None
+    for source in sources:
+        for term in _source_match_terms(source):
+            if term and term in normalized_text:
+                score = len(term)
+                if best is None or score > best[0]:
+                    best = (score, source)
+    return best[1] if best else None
+
+
+def _source_match_terms(source: FinanceSource) -> tuple[str, ...]:
+    values = [source.source_id, source.title, source.author, *source.aliases]
+    terms = []
+    for value in values:
+        normalized = _normalize_match_text(value)
+        if normalized:
+            terms.append(normalized)
+    return tuple(dict.fromkeys(terms))
+
+
+def _normalize_match_text(value: str) -> str:
+    lowered = value.casefold()
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", lowered)

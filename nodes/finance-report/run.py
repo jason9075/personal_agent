@@ -13,9 +13,11 @@ def main() -> int:
     if "--args-json" in sys.argv:
         idx = sys.argv.index("--args-json")
         payload: dict = json.loads(sys.argv[idx + 1])
-        source = str(payload.get("source", "")).strip()
-        target_date = str(payload.get("target_date", "")).strip()
-        workers = int(payload.get("workers", 4))
+        prev_output = str(payload.get("prev_output", "")).strip()
+        prev_payload = _parse_prev_output(prev_output)
+        source = str(payload.get("source") or prev_payload.get("source", "")).strip()
+        target_date = str(payload.get("target_date") or prev_payload.get("target_date", "")).strip()
+        workers = int(payload.get("workers") or prev_payload.get("workers", 4) or 4)
         list_sources = bool(payload.get("list_sources", False))
     else:
         parser = argparse.ArgumentParser()
@@ -49,6 +51,15 @@ def main() -> int:
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
     return 0
+
+def _parse_prev_output(prev_output: str) -> dict:
+    if not prev_output:
+        return {}
+    try:
+        parsed = json.loads(prev_output)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 if __name__ == "__main__":

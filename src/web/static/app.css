@@ -276,6 +276,77 @@ html, body {
   overflow: auto;
 }
 
+.markdown-viewer {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: normal;
+}
+
+.markdown-viewer h1,
+.markdown-viewer h2,
+.markdown-viewer h3,
+.markdown-viewer h4,
+.markdown-viewer h5,
+.markdown-viewer h6 {
+  color: var(--nord6);
+  margin: 0 0 10px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.markdown-viewer h1 { font-size: 22px; }
+.markdown-viewer h2 { font-size: 18px; }
+.markdown-viewer h3 { font-size: 16px; }
+
+.markdown-viewer p,
+.markdown-viewer ul,
+.markdown-viewer blockquote,
+.markdown-viewer pre {
+  margin: 0 0 12px;
+}
+
+.markdown-viewer ul {
+  padding-left: 18px;
+}
+
+.markdown-viewer li {
+  margin: 4px 0;
+}
+
+.markdown-viewer blockquote {
+  padding: 10px 14px;
+  border-left: 3px solid var(--nord8);
+  background: rgba(94, 129, 172, 0.10);
+  border-radius: 8px;
+  color: var(--nord5);
+}
+
+.markdown-viewer a {
+  color: var(--nord8);
+  text-decoration: none;
+}
+
+.markdown-viewer a:hover {
+  text-decoration: underline;
+}
+
+.markdown-viewer strong {
+  color: var(--nord6);
+}
+
+.markdown-viewer em {
+  color: #c7d2e3;
+}
+
+.markdown-viewer .md-spacer {
+  height: 8px;
+}
+
+.markdown-viewer .md-code {
+  margin-top: 10px;
+}
+
 .viewer-compact {
   min-height: 92px;
 }

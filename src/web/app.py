@@ -83,6 +83,7 @@ def create_app(workflow_db_path: Path) -> FastAPI:
                 id=node_id,
                 name=node_id,
                 description="",
+                model_name="gpt-5.4",
                 node_type="agent",
                 pass_index=1,
                 start_node=False,
@@ -111,6 +112,7 @@ def create_app(workflow_db_path: Path) -> FastAPI:
                 id=node_id,
                 name=str(body.get("name", existing.name)),
                 description=str(body.get("description", existing.description)),
+                model_name=str(body.get("model_name", existing.model_name or "gpt-5.4")),
                 node_type=str(body.get("node_type", existing.node_type)),
                 pass_index=int(body.get("pass_index", existing.pass_index)),
                 start_node=bool(body.get("start_node", existing.start_node)),
@@ -178,6 +180,7 @@ def create_app(workflow_db_path: Path) -> FastAPI:
             id=str(body.get("id", "")),
             name=str(body.get("name", "")),
             description=str(body.get("description", "")),
+            model_name=str(body.get("model_name", "gpt-5.4")),
             node_type=str(body.get("node_type", "agent")),
             pass_index=int(body.get("pass_index", 1)),
             start_node=bool(body.get("start_node", False)),
@@ -269,6 +272,7 @@ def _node_to_dict(node: WorkflowNode) -> dict[str, Any]:
         "id": node.id,
         "name": node.name,
         "description": node.description,
+        "model_name": node.model_name,
         "node_type": node.node_type,
         "pass_index": node.pass_index,
         "start_node": node.start_node,
@@ -312,6 +316,7 @@ def _build_preview_prompt(node: WorkflowNode) -> str:
     if system_prompt:
         parts.append(system_prompt)
     parts.append("----")
+    parts.append(f"Model: {node.model_name or 'gpt-5.4'}")
     parts.append(f"Node Name: {node.name or '(empty)'}")
     parts.append(f"Node Description: {node.description or '(empty)'}")
     if node.use_prev_output:
@@ -335,11 +340,10 @@ def _read_code_file(path_str: Any) -> str:
 def _resolve_node_tools(node: WorkflowNode, workflow_db_path: Path) -> list[str]:
     if node.allowed_tools:
         return node.allowed_tools
-    if node.node_type != "router":
-        return []
-
     graph = load_workflow_graph(workflow_db_path)
     candidates = graph.candidate_targets(node.id)
+    if not any(candidate.enabled for candidate in candidates):
+        return []
     resolved: list[str] = []
     for candidate in candidates:
         label = candidate.route_label or candidate.name or candidate.id

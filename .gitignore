@@ -22,7 +22,7 @@ db/*.sqlite3
 db/*.db
 db/*.db-*
 .local/
-notes/finance/
+nodes/finance-report/notes/
 
 # Nix
 .direnv/
@@ -34,6 +34,7 @@ result-*
 .env.*
 *.credentials.json
 config/finance_sources.toml
+nodes/finance/sources.toml
 
 # Editor
 .vim/

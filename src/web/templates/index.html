@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>personal_agent — Workflow</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E🧠%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css">
   <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -43,16 +44,13 @@
           <label class="field-label">Description</label>
           <textarea id="ne-description" rows="3"></textarea>
 
-          <label class="field-label">Node Type</label>
-          <select id="ne-node-type">
-            <option value="router">router</option>
-            <option value="agent">agent</option>
-            <option value="tool">tool</option>
-            <option value="response">response</option>
+          <label class="field-label">Model</label>
+          <select id="ne-model-name">
+            <option value="gpt-5.4">gpt-5.4</option>
+            <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+            <option value="gpt-5.3-codex">gpt-5.3-codex</option>
+            <option value="gpt-5.2">gpt-5.2</option>
           </select>
-
-          <label class="field-label">Pass Index</label>
-          <input type="number" id="ne-pass-index" min="1" max="20">
 
           <div class="kv-row">
             <span>Enabled</span>
@@ -61,10 +59,6 @@
           <div class="kv-row">
             <span>Start Node</span>
             <label class="toggle"><input type="checkbox" id="ne-start-node"><span class="slider"></span></label>
-          </div>
-          <div class="kv-row">
-            <span>Send Reply</span>
-            <label class="toggle"><input type="checkbox" id="ne-send-response"><span class="slider"></span></label>
           </div>
           <div class="kv-row">
             <span>Use Prev</span>
@@ -186,16 +180,13 @@
     <label class="field-label">Name</label>
     <input type="text" id="modal-name">
 
-    <label class="field-label">Node Type</label>
-    <select id="modal-node-type">
-      <option value="agent">agent</option>
-      <option value="tool">tool</option>
-      <option value="router">router</option>
-      <option value="response">response</option>
+    <label class="field-label">Model</label>
+    <select id="modal-model-name">
+      <option value="gpt-5.4">gpt-5.4</option>
+      <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+      <option value="gpt-5.3-codex">gpt-5.3-codex</option>
+      <option value="gpt-5.2">gpt-5.2</option>
     </select>
-
-    <label class="field-label">Pass Index</label>
-    <input type="number" id="modal-pass" min="1" max="20" value="2">
 
     <div class="btn-row" style="margin-top:16px">
       <button id="modal-confirm" class="btn btn-primary">Add</button>
@@ -221,8 +212,8 @@
         <div id="dm-name" class="summary-value"></div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Pass Index</div>
-        <div id="dm-pass-index" class="summary-value"></div>
+        <div class="summary-label">Model</div>
+        <div id="dm-model-name" class="summary-value"></div>
       </div>
       <div class="summary-card">
         <div class="summary-label">Timeout</div>
@@ -244,13 +235,14 @@
 
         <div class="panel-heading">
           <h4>System Prompt</h4>
+          <span class="panel-note">markdown preview</span>
         </div>
-        <pre id="dm-system-prompt" class="viewer viewer-tall"></pre>
+        <div id="dm-system-prompt" class="viewer viewer-tall markdown-viewer"></div>
 
         <div class="panel-heading">
           <h4>Allowed Tools</h4>
         </div>
-        <pre id="dm-allowed-tools" class="viewer viewer-compact"></pre>
+        <pre class="viewer viewer-compact code-viewer"><code id="dm-allowed-tools"></code></pre>
       </section>
 
       <section class="details-panel">
