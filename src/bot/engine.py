@@ -131,7 +131,7 @@ def _execute_node(
                 recent_context=recent_context,
             )
         except Exception:
-            fallback_reply = envelope.metadata.get("fallback_reply", "目前無法完成判斷，請稍後再試。")
+            fallback_reply = envelope.metadata.get("fallback_reply", "目前無法完成判斷，請稍後再試，並檢查是否登入。")
             if envelope.response_mode == "decision":
                 decision = NodeDecision(decision="reply", reply=fallback_reply)
                 output_text = fallback_reply
