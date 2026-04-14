@@ -13,8 +13,8 @@ function modelColors(modelName) {
 }
 
 function shortModelName(modelName) {
-  const text = modelName || 'gpt-5.4';
-  return text.replace(/^gpt-/, '');
+  if (!modelName) return 'tool';
+  return modelName.replace(/^gpt-/, '');
 }
 
 const S = {
@@ -61,7 +61,7 @@ function registerNodeType() {
     this.properties = {
       node_id: '',
       name: '',
-      model_name: 'gpt-5.4',
+      model_name: '',
       enabled: true,
       start_node: false,
       hooks: {},
@@ -72,7 +72,9 @@ function registerNodeType() {
   WorkflowNodeView.title = 'Node';
 
   WorkflowNodeView.prototype._applyColors = function _applyColors() {
-    const pal = modelColors(this.properties.model_name);
+    const pal = this.properties.model_name
+      ? modelColors(this.properties.model_name)
+      : MODEL_PALETTE_DEFAULT;
     this.color = this.properties.enabled ? pal.title : '#2a2a2a';
     this.bgcolor = this.properties.enabled ? pal.body : '#1a1a1a';
   };
@@ -202,7 +204,7 @@ async function loadGraph() {
       lnode.properties = {
         node_id: node.id,
         name: node.name,
-        model_name: node.model_name || 'gpt-5.4',
+        model_name: node.model_name || '',
         enabled: node.enabled,
         start_node: node.start_node,
         hooks: node.hooks || {},
@@ -249,9 +251,16 @@ function layoutSortedNodes(nodes) {
 }
 
 function updateBadge() {
-  const models = new Set(S.graphData.nodes.map(node => node.model_name || 'gpt-5.4'));
-  document.getElementById('graph-badge').textContent =
-    `${S.graphData.nodes.length} nodes · ${S.graphData.edges.length} edges · ${models.size} models`;
+  const llmNodes = S.graphData.nodes.filter(n => n.model_name);
+  const models = new Set(llmNodes.map(n => n.model_name));
+  const toolCount = S.graphData.nodes.length - llmNodes.length;
+  const parts = [
+    `${S.graphData.nodes.length} nodes`,
+    `${S.graphData.edges.length} edges`,
+    `${models.size} model${models.size !== 1 ? 's' : ''}`,
+  ];
+  if (toolCount > 0) parts.push(`${toolCount} tool`);
+  document.getElementById('graph-badge').textContent = parts.join(' · ');
 }
 
 function computeNodeLayout(nodes, edges) {
@@ -403,7 +412,10 @@ function renderNodeEditor(lnode) {
   setValue('ne-node-id', node.id, true);
   setValue('ne-name', node.name || '');
   setValue('ne-description', node.description || '');
-  setValue('ne-model-name', node.model_name || 'gpt-5.4');
+  const usesLlm = !!node.model_name;
+  document.getElementById('ne-model-row').classList.toggle('hidden', !usesLlm);
+  document.getElementById('ne-tool-row').classList.toggle('hidden', usesLlm);
+  if (usesLlm) setValue('ne-model-name', node.model_name);
   document.getElementById('ne-enabled').checked = !!node.enabled;
   document.getElementById('ne-start-node').checked = !!node.start_node;
   document.getElementById('ne-use-prev-output').checked = !!node.use_prev_output;
@@ -446,7 +458,7 @@ async function renderNodeDetails(node, hooks = {}) {
   const detail = await POST('/api/node-details-preview', node);
 
   setText('dm-name', node.name || '(empty)');
-  setText('dm-model-name', node.model_name || 'gpt-5.4');
+  setText('dm-model-name', node.model_name || '— (tool node)');
   setPre('dm-description', node.description || '(empty)');
   setText('dm-timeout', `${node.timeout_seconds ?? 0}s`);
   setPre('dm-node-prompt-path', detail.node_prompt_path || '(none)');
@@ -463,11 +475,13 @@ async function renderNodeDetails(node, hooks = {}) {
 }
 
 function collectNodeForm(nodeId) {
+  const modelRow = document.getElementById('ne-model-row');
+  const usesLlm = !modelRow.classList.contains('hidden');
   return {
     id: nodeId,
     name: document.getElementById('ne-name').value.trim(),
     description: document.getElementById('ne-description').value.trim(),
-    model_name: document.getElementById('ne-model-name').value,
+    model_name: usesLlm ? document.getElementById('ne-model-name').value : null,
     enabled: document.getElementById('ne-enabled').checked,
     start_node: document.getElementById('ne-start-node').checked,
     use_prev_output: document.getElementById('ne-use-prev-output').checked,
@@ -517,11 +531,13 @@ function markNodeDraft(nodeId) {
 }
 
 function collectNodeFormLoose(nodeId) {
+  const modelRow = document.getElementById('ne-model-row');
+  const usesLlm = !modelRow.classList.contains('hidden');
   return {
     id: nodeId,
     name: document.getElementById('ne-name').value.trim(),
     description: document.getElementById('ne-description').value.trim(),
-    model_name: document.getElementById('ne-model-name').value,
+    model_name: usesLlm ? document.getElementById('ne-model-name').value : null,
     enabled: document.getElementById('ne-enabled').checked,
     start_node: document.getElementById('ne-start-node').checked,
     use_prev_output: document.getElementById('ne-use-prev-output').checked,
@@ -782,7 +798,7 @@ function applyDraftToCanvas(nodeId, draft) {
     ...lnode.properties,
     node_id: nodeId,
     name: draft.name || nodeId,
-    model_name: draft.model_name || 'gpt-5.4',
+    model_name: draft.model_name || '',
     enabled: !!draft.enabled,
     start_node: !!draft.start_node,
     hooks: lnode.properties.hooks || {},
@@ -794,7 +810,6 @@ function applyDraftToCanvas(nodeId, draft) {
 function openModal() {
   document.getElementById('modal-node-id').value = '';
   document.getElementById('modal-name').value = '';
-  document.getElementById('modal-model-name').value = 'gpt-5.4';
   document.getElementById('modal').classList.remove('hidden');
 }
 
@@ -809,7 +824,7 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
     await PUT(`/api/nodes/${nodeId}`, {
       name: document.getElementById('modal-name').value.trim() || nodeId,
       description: '',
-      model_name: document.getElementById('modal-model-name').value,
+      model_name: null,
       enabled: true,
       start_node: false,
       use_prev_output: true,

@@ -47,7 +47,7 @@ def execute_workflow(
     prev_output = ""
 
     while current:
-        logger.info("Executing node id=%s model=%s", current.id, current.model_name)
+        logger.info("Executing node id=%s model=%s", current.id, current.model_name or "—")
         result = _execute_node(
             current,
             graph,

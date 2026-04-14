@@ -62,13 +62,18 @@
                 <label class="field-label">Description</label>
                 <textarea id="ne-description" rows="3"></textarea>
 
-                <label class="field-label">Model</label>
-                <select id="ne-model-name">
-                  <option value="gpt-5.4">gpt-5.4</option>
-                  <option value="gpt-5.4-mini">gpt-5.4-mini</option>
-                  <option value="gpt-5.3-codex">gpt-5.3-codex</option>
-                  <option value="gpt-5.2">gpt-5.2</option>
-                </select>
+                <div id="ne-model-row">
+                  <label class="field-label">Model</label>
+                  <select id="ne-model-name">
+                    <option value="gpt-5.4">gpt-5.4</option>
+                    <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+                    <option value="gpt-5.3-codex">gpt-5.3-codex</option>
+                    <option value="gpt-5.2">gpt-5.2</option>
+                  </select>
+                </div>
+                <div id="ne-tool-row" class="kv-row hidden">
+                  <span>Type</span><code>tool</code>
+                </div>
 
                 <div class="kv-row">
                   <span>Enabled</span>
@@ -163,13 +168,6 @@
     <label class="field-label">Name</label>
     <input type="text" id="modal-name">
 
-    <label class="field-label">Model</label>
-    <select id="modal-model-name">
-      <option value="gpt-5.4">gpt-5.4</option>
-      <option value="gpt-5.4-mini">gpt-5.4-mini</option>
-      <option value="gpt-5.3-codex">gpt-5.3-codex</option>
-      <option value="gpt-5.2">gpt-5.2</option>
-    </select>
 
     <div class="btn-row" style="margin-top:16px">
       <button id="modal-confirm" class="btn btn-primary">Add</button>

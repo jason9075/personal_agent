@@ -11,7 +11,7 @@ class WorkflowNode:
     id: str
     name: str
     description: str
-    model_name: str
+    model_name: str | None
     start_node: bool
     enabled: bool
     executor_path: str
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS workflow_nodes (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
-    model_name TEXT NOT NULL DEFAULT 'gpt-5.4',
+    model_name TEXT NOT NULL DEFAULT '',
     start_node INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     executor_path TEXT NOT NULL DEFAULT '',
@@ -124,7 +124,7 @@ _SEED_NODES: list[WorkflowNode] = [
         id="finance-schedule",
         name="Finance Schedule",
         description="Manage finance report schedules stored in SQLite.",
-        model_name="gpt-5.4",
+        model_name=None,
         start_node=False,
         enabled=True,
         executor_path="nodes/finance-schedule/run.py",
@@ -138,7 +138,7 @@ _SEED_NODES: list[WorkflowNode] = [
         id="echo",
         name="Echo",
         description="Testing node that returns the extracted text directly.",
-        model_name="gpt-5.4",
+        model_name=None,
         start_node=False,
         enabled=True,
         executor_path="nodes/echo/run.py",
@@ -187,6 +187,7 @@ def ensure_workflow_db(db_path: Path) -> None:
         )
         _seed_nodes_and_edges(conn)
         _migrate_ensure_node_creator(conn)
+        _migrate_clear_unused_model_names(conn)
         conn.commit()
 
 
@@ -208,6 +209,18 @@ def _migrate_ensure_node_creator(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT INTO workflow_edges (from_node_id, to_node_id) VALUES (?, ?)",
             ("intent-router", "node-creator"),
+        )
+
+
+_NO_LLM_NODE_IDS = {"echo", "finance-schedule"}
+
+
+def _migrate_clear_unused_model_names(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: clear model_name for nodes that never use LLM."""
+    for node_id in _NO_LLM_NODE_IDS:
+        conn.execute(
+            "UPDATE workflow_nodes SET model_name = '' WHERE id = ? AND model_name != ''",
+            (node_id,),
         )
 
 
@@ -233,7 +246,7 @@ def _row_to_node(row: sqlite3.Row | tuple) -> WorkflowNode:
         id=row[0],
         name=row[1],
         description=row[2],
-        model_name=row[3] or "gpt-5.4",
+        model_name=row[3] or None,
         start_node=bool(row[4]),
         enabled=bool(row[5]),
         executor_path=row[6],
@@ -313,7 +326,7 @@ def _upsert_node_conn(conn: sqlite3.Connection, node: WorkflowNode) -> None:
         node.id,
         node.name,
         node.description,
-        node.model_name,
+        node.model_name or "",
         1 if node.start_node else 0,
         1 if node.enabled else 0,
         node.executor_path,
