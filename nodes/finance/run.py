@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ def main() -> int:
     explicit_target_date = str(payload.get("target_date", "")).strip()
     explicit_list_sources = bool(payload.get("list_sources", False))
     workers = int(payload.get("workers", 4) or 4)
+    channel_id = os.getenv("FINANCE_REPORT_CHANNEL_ID", "").strip() or str(payload.get("channel_id", "")).strip()
 
     sources = list_available_sources()
     note_index = _build_note_index(node_dir.parent / "finance-report" / "notes", sources)
@@ -52,6 +54,8 @@ def main() -> int:
         default_args["target_date"] = explicit_target_date
     if workers:
         default_args["workers"] = workers
+    if channel_id:
+        default_args["channel"] = channel_id
 
     run_output = json.dumps(
         {
@@ -60,6 +64,7 @@ def main() -> int:
                 "target_date": explicit_target_date,
                 "matched_source": selected_source.source_id if selected_source else "",
                 "workers": workers,
+                "channel_id": channel_id,
             },
             "available_rss_sources": [
                 {

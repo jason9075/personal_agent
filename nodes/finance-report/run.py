@@ -87,8 +87,6 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--list-sources", action="store_true")
     parser.add_argument("--node-prompt-path", default="")
-    parser.add_argument("--notify-discord", action="store_true")
-    parser.add_argument("--channel-id", default="")
     parser.add_argument("target_date_positional", nargs="?", default="")
     args = parser.parse_args()
 
@@ -101,10 +99,6 @@ def main() -> int:
             argv.extend(["--source", args.source])
         if args.node_prompt_path:
             argv.extend(["--node-prompt-path", args.node_prompt_path])
-        if args.notify_discord:
-            argv.append("--notify-discord")
-        if args.channel_id:
-            argv.extend(["--channel-id", args.channel_id])
         target_date = args.target_date or args.target_date_positional
         if target_date:
             argv.append(target_date)

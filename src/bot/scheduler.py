@@ -66,8 +66,6 @@ class FinanceScheduler:
         cmd = ["python", "nodes/finance-report/run.py", "--workers", str(job.workers)]
         if job.source_id:
             cmd.extend(["--source", job.source_id])
-        if job.channel_id:
-            cmd.extend(["--notify-discord", "--channel-id", job.channel_id])
 
         completed = await asyncio.to_thread(
             subprocess.run,
@@ -77,8 +75,11 @@ class FinanceScheduler:
             cwd=self.repo_root,
             check=False,
         )
-        output = (completed.stdout.strip() or completed.stderr.strip() or "(no output)")[:1800]
         status = "ok" if completed.returncode == 0 else "error"
+        if status == "ok":
+            output = completed.stdout.strip() or "(no output)"
+        else:
+            output = completed.stderr.strip() or completed.stdout.strip() or "(no output)"
         logger.info(
             "Scheduler job completed job_id=%s status=%s returncode=%s output_len=%s",
             job.id,
@@ -91,14 +92,19 @@ class FinanceScheduler:
             job.id,
             ran_at=now.isoformat(timespec="seconds"),
             status=status,
-            message=output,
+            message=output[:2000],
         )
 
-        if job.channel_id and completed.returncode != 0:
-            channel = self.client.get_channel(int(job.channel_id))
-            if channel is not None:
-                prefix = f"排程 `{job.name}` 執行{'成功' if status == 'ok' else '失敗'}"
-                await channel.send(f"{prefix}：\n```text\n{output}\n```")
+        if not job.channel_id:
+            return
+        channel = self.client.get_channel(int(job.channel_id))
+        if channel is None:
+            return
+        if status == "ok":
+            await _send_to_channel(channel, output)
+        else:
+            prefix = f"排程 `{job.name}` 執行失敗"
+            await channel.send(f"{prefix}：\n```text\n{output[:1800]}\n```")
 
 
 def cron_matches(expr: str, current: datetime) -> bool:
@@ -160,3 +166,15 @@ def _parse_field(field: str, minimum: int, maximum: int) -> set[int]:
 def _validate_range(value: int, minimum: int, maximum: int) -> None:
     if value < minimum or value > maximum:
         raise RuntimeError(f"cron value {value} out of range {minimum}-{maximum}")
+
+
+async def _send_to_channel(channel, content: str, limit: int = 1900) -> None:
+    text = content.strip() or "(empty)"
+    while len(text) > limit:
+        split_at = text.rfind("\n", 0, limit)
+        if split_at <= 0:
+            split_at = limit
+        await channel.send(text[:split_at].strip())
+        text = text[split_at:].strip()
+    if text:
+        await channel.send(text)

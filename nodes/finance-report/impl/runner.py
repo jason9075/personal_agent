@@ -1,7 +1,6 @@
 """RSS entrypoint for the finance report pipeline."""
 from __future__ import annotations
 
-import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -17,7 +16,6 @@ from .config import FinanceConfig, list_available_sources, load_configs
 from .env_guard import assert_clean_pythonpath
 from .fetcher import EpisodeNotFoundError, download_episode_media, resolve_episode
 from .logging_utils import get_logger, set_current_logger, setup_logging
-from .notify import send_markdown_message
 from .transcribe import transcribe_video
 
 WHISPER_CONCURRENCY = 1
@@ -42,17 +40,9 @@ def main(argv: list[str] | None = None) -> None:
     repo_root = Path(__file__).resolve().parents[3]
     configs = load_configs(cli_args.source_id)
     worker_count = min(cli_args.workers, len(configs))
-    print(f"[finance] processing {len(configs)} source(s) with {worker_count} worker(s)", flush=True)
+    print(f"[finance] processing {len(configs)} source(s) with {worker_count} worker(s)", file=sys.stderr, flush=True)
     whisper_slots = Semaphore(WHISPER_CONCURRENCY)
     codex_slots = Semaphore(CODEX_CONCURRENCY)
-    notify_channel_id = cli_args.channel_id.strip()
-    bot_token = ""
-    if cli_args.notify_discord:
-        bot_token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-        if not bot_token:
-            raise RuntimeError("DISCORD_BOT_TOKEN not set")
-        if not notify_channel_id:
-            raise RuntimeError("--channel-id is required when --notify-discord is enabled")
 
     had_error = False
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="finance") as executor:
@@ -62,8 +52,6 @@ def main(argv: list[str] | None = None) -> None:
                 config,
                 cli_args.target_date,
                 cli_args.node_prompt_path,
-                bot_token,
-                notify_channel_id,
                 repo_root,
                 whisper_slots,
                 codex_slots,
@@ -85,8 +73,6 @@ def _process_source(
     config: FinanceConfig,
     requested_target_date,
     node_prompt_path: str,
-    bot_token: str,
-    notify_channel_id: str,
     repo_root: Path,
     whisper_slots: Semaphore,
     codex_slots: Semaphore,
@@ -111,8 +97,6 @@ def _process_source(
         )
         existing_message = prepared.get("existing_message", "").strip()
         if existing_message:
-            if notify_channel_id:
-                send_markdown_message(bot_token, notify_channel_id, existing_message)
             return existing_message
 
         logger.info("Waiting for Codex slot")
@@ -140,24 +124,12 @@ def _process_source(
             )
         logger.info("Analysis completed: %s", prepared["note_path"])
         message = _format_discord_message(config.source.title, str(prepared["target_date"]), markdown)
-        if notify_channel_id:
-            logger.info("Sending Discord notification")
-            send_markdown_message(bot_token, notify_channel_id, message)
-            logger.info("Discord notification sent to channel %s", notify_channel_id)
         return message
     except EpisodeNotFoundError as exc:
         logger.exception("No matching episode was found")
-        if config.notify_on_no_episode and notify_channel_id:
-            send_markdown_message(bot_token, notify_channel_id, f"【{config.source.title}】指定日期沒有找到可處理的新集數。({exc})")
         raise RuntimeError(f"{config.source.source_id}: no matching episode") from exc
     except Exception as exc:
         logger.exception("Finance report failed")
-        if notify_channel_id:
-            send_markdown_message(
-                bot_token,
-                notify_channel_id,
-                f"【{config.source.title}】每日財經報告失敗：{type(exc).__name__}。請查看本地 log 後重試。",
-            )
         raise RuntimeError(f"{config.source.source_id}: {type(exc).__name__}") from exc
 
 
