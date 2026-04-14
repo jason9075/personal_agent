@@ -29,9 +29,40 @@ ruff check src/
 
 ## Architecture: N-Pass Workflow Engine
 
-**Pass 1 — Decision:** decision nodes inspect only their enabled outgoing edges. Each decision node may either reply directly to the user or delegate to one reachable next node by returning structured JSON.
+```text
+message -> start_node (router) -> decision: reply or use_next_node -> node lifecycle -> Discord reply?
+```
 
-**Execution — `--args-json` protocol:** the engine calls `python nodes/<id>/run.py --args-json '{...}'`. Decision nodes must return either `{"decision":"reply","reply":"..."}` or `{"decision":"use_next_node","next_node_id":"...","args":{...}}`. Execution nodes write normal stdout replies.
+**Node lifecycle:**
+
+```text
+pre_hook.py? -> run.py -> post_hook.py?
+```
+
+**Node types:**
+
+| `node_type` | Behaviour |
+|-------------|-----------|
+| `router` | Returns structured JSON (`reply` or `use_next_node`). Used as decision/intent nodes. |
+| `agent` | Writes reply to stdout; `send_response` controls whether the engine returns immediately. |
+| `tool` | Same as `agent`; typically `send_response=True` with short `timeout_seconds`. |
+
+**Execution — `--args-json` protocol:** the engine calls `python nodes/<id>/run.py --args-json '{...}'`.
+
+- `router` nodes receive `recent_context`, `next_nodes` list, and must return either:
+  - `{"decision":"reply","reply":"..."}` — respond directly to user
+  - `{"decision":"use_next_node","next_node_id":"...","args":{...}}` — delegate to a reachable node
+- `agent`/`tool` nodes write the reply text to stdout.
+
+**Pass / routing rules:**
+
+- `start_node` is unique (enforced by DB unique index on `start_node=1`).
+- Decision routing only selects nodes reachable through enabled outgoing edges.
+- If `send_response=True`, the engine returns the node's stdout immediately without following edges.
+- If `send_response=False` and no matching edge successor, stdout is returned as-is.
+- Edge conditions: `always`, `returncode_eq`, `output_contains`.
+
+**Hook discovery:** engine auto-scans the node directory for `pre_hook.py` and `post_hook.py` alongside `run.py`. Explicit `pre_hook_path`/`post_hook_path` in the DB take precedence.
 
 **Combined process:** Discord bot + FastAPI web server share the same asyncio event loop via `asyncio.gather(client.start(), uvicorn_server.serve())`.
 
@@ -41,11 +72,13 @@ ruff check src/
 |------|------|
 | `src/bot/bot.py` | Discord event loop + asyncio.gather with web server |
 | `src/bot/engine.py` | workflow execution loop, routing, node lifecycle |
-| `src/bot/workflow_db.py` | SQLite schema/CRUD for nodes and edges; seed data |
+| `src/bot/workflow_db.py` | SQLite schema/CRUD for nodes and edges; seed data; hook scanning |
 | `src/bot/nodes.py` | Execution helpers and reply formatters |
 | `src/bot/scheduler.py` | In-process cron scheduler (polls every 30 s) |
 | `src/bot/schedule_db.py` | SQLite schema/CRUD for scheduled jobs |
 | `src/bot/prompts.py` | Loads prompt templates from node-local markdown files |
+| `src/bot/config.py` | Env-backed constants |
+| `src/bot/logging_utils.py` | Shared logger setup |
 | `src/web/app.py` | FastAPI: `create_app(db_path)` — REST API for workflow graph |
 | `src/web/templates/index.html` | LiteGraph.js graph editor (English UI, Nord colours) |
 | `src/web/static/app.js` | Graph rendering, API integration, connection change sync |
@@ -54,6 +87,8 @@ ruff check src/
 | `nodes/finance/` | Finance decision node and source catalog |
 | `nodes/finance-report/` | Finance node prompts and generated notes |
 | `nodes/finance-report/impl/runner.py` | Finance report pipeline entry point |
+| `nodes/finance-schedule/` | Schedule management node |
+| `nodes/echo/` | Testing/echo node |
 | `nodes/*/run.py` | Node executors (`--args-json` protocol) |
 
 ### Workflow Graph DB Schema
@@ -61,16 +96,56 @@ ruff check src/
 Tables in `db/workflow.sqlite3`:
 
 ```sql
-workflow_nodes(id, pass_index, start_node, enabled)
-workflow_edges(id, from_node_id, to_node_id, condition_type, condition_value)
+workflow_nodes(
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    description TEXT,
+    model_name TEXT DEFAULT 'gpt-5.4',
+    node_type TEXT DEFAULT 'agent',   -- 'router' | 'agent' | 'tool'
+    pass_index INTEGER,
+    start_node INTEGER,
+    enabled INTEGER,
+    executor_path TEXT,
+    pre_hook_path TEXT,
+    post_hook_path TEXT,
+    system_prompt_path TEXT,
+    prompt_template_path TEXT,
+    use_prev_output INTEGER,          -- pass previous node output into payload
+    send_response INTEGER,            -- return stdout immediately to Discord
+    timeout_seconds INTEGER
+)
+
+workflow_edges(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_node_id TEXT,
+    to_node_id TEXT,
+    condition_type TEXT DEFAULT 'always',   -- 'always' | 'returncode_eq' | 'output_contains'
+    condition_value TEXT
+)
 ```
 
 ### Node Contract
 
 To add a node:
 1. Create `nodes/<name>/run.py` — accepts `--args-json '{"key":"val"}'`, writes to stdout, exits 0
-2. Add the node via web UI or `_SEED_NODES`
-3. For decision nodes, return either `reply` or `use_next_node` JSON
+2. Optionally add `nodes/<name>/pre_hook.py` and/or `post_hook.py` (same `--args-json` protocol)
+3. Add the node via web UI or `_SEED_NODES` in `workflow_db.py`
+4. For `router` nodes, return `reply` or `use_next_node` JSON; for `agent`/`tool` nodes, write reply to stdout
+
+Engine injects into `--args-json` payload automatically:
+- `system_prompt_path`, `prompt_template_path`, `model_name` (from node config, if set)
+- `prev_output` (if `use_prev_output=True` and there is previous node output)
+- `recent_context`, `next_nodes` (only for `router` nodes)
+
+### Seed Nodes
+
+| Node ID | Type | Role |
+|---------|------|------|
+| `intent-router` | `router` | Start node; routes to finance or echo |
+| `finance` | `router` | Finance domain; routes to finance-report or finance-schedule |
+| `finance-report` | `agent` | RSS fetch → transcribe → LLM digest → Discord post |
+| `finance-schedule` | `tool` | CRUD for scheduled finance jobs |
+| `echo` | `tool` | Testing node; returns input text directly |
 
 ### Finance Report Pipeline
 
