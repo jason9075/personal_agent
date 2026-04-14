@@ -56,8 +56,6 @@ def create_app(workflow_db_path: Path) -> FastAPI:
                         "id": edge.id,
                         "from_node_id": edge.from_node_id,
                         "to_node_id": edge.to_node_id,
-                        "condition_type": edge.condition_type,
-                        "condition_value": edge.condition_value,
                     }
                     for edge in graph.edges
                 ],
@@ -94,17 +92,8 @@ def create_app(workflow_db_path: Path) -> FastAPI:
                 system_prompt_path=None,
                 prompt_template_path=None,
                 use_prev_output=True,
-                allowed_tools=[],
                 send_response=True,
-                input_schema=None,
-                output_schema=None,
                 timeout_seconds=600,
-                max_llm_calls=0,
-                route_label=node_id,
-                route_description="",
-                router_mode="llm",
-                router_patterns=[],
-                metadata={},
             )
 
         try:
@@ -123,19 +112,10 @@ def create_app(workflow_db_path: Path) -> FastAPI:
                 system_prompt_path=_nullable_str(body.get("system_prompt_path", existing.system_prompt_path)),
                 prompt_template_path=_nullable_str(body.get("prompt_template_path", existing.prompt_template_path)),
                 use_prev_output=bool(body.get("use_prev_output", existing.use_prev_output)),
-                allowed_tools=_as_string_list(body.get("allowed_tools", existing.allowed_tools)),
                 send_response=bool(body.get("send_response", existing.send_response)),
-                input_schema=_as_json_obj(body.get("input_schema", existing.input_schema)),
-                output_schema=_as_json_obj(body.get("output_schema", existing.output_schema)),
                 timeout_seconds=int(body.get("timeout_seconds", existing.timeout_seconds)),
-                max_llm_calls=int(body.get("max_llm_calls", existing.max_llm_calls)),
-                route_label=_nullable_str(body.get("route_label", existing.route_label)),
-                route_description=_nullable_str(body.get("route_description", existing.route_description)),
-                router_mode=str(body.get("router_mode", existing.router_mode)),
-                router_patterns=_as_string_list(body.get("router_patterns", existing.router_patterns)),
-                metadata=_as_json_dict(body.get("metadata", existing.metadata)),
             )
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
         upsert_node(workflow_db_path, node)
@@ -153,8 +133,6 @@ def create_app(workflow_db_path: Path) -> FastAPI:
                 id=0,
                 from_node_id=str(body["from_node_id"]),
                 to_node_id=str(body["to_node_id"]),
-                condition_type=str(body.get("condition_type", "always")),
-                condition_value=str(body.get("condition_value", "")),
             )
         except KeyError as exc:
             raise HTTPException(status_code=422, detail=f"missing field: {exc}")
@@ -191,17 +169,8 @@ def create_app(workflow_db_path: Path) -> FastAPI:
             system_prompt_path=_nullable_str(body.get("system_prompt_path")),
             prompt_template_path=_nullable_str(body.get("prompt_template_path")),
             use_prev_output=bool(body.get("use_prev_output", True)),
-            allowed_tools=_as_string_list(body.get("allowed_tools", [])),
             send_response=bool(body.get("send_response", True)),
-            input_schema=_as_json_obj(body.get("input_schema")),
-            output_schema=_as_json_obj(body.get("output_schema")),
             timeout_seconds=int(body.get("timeout_seconds", 600)),
-            max_llm_calls=int(body.get("max_llm_calls", 0)),
-            route_label=_nullable_str(body.get("route_label")),
-            route_description=_nullable_str(body.get("route_description")),
-            router_mode=str(body.get("router_mode", "llm")),
-            router_patterns=_as_string_list(body.get("router_patterns", [])),
-            metadata=_as_json_dict(body.get("metadata")),
         )
         hook_info = detect_node_hooks(node, _REPO_ROOT)
         resolved_tools = _resolve_node_tools(node, workflow_db_path)
@@ -227,45 +196,6 @@ def _nullable_str(value: Any) -> str | None:
     return text or None
 
 
-def _as_string_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if value is None:
-        return []
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        return [line.strip() for line in text.splitlines() if line.strip()]
-    raise TypeError("expected string list")
-
-
-def _as_json_obj(value: Any) -> dict | None:
-    if value in ("", None):
-        return None
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        parsed = json.loads(value)
-        if not isinstance(parsed, dict):
-            raise TypeError("expected JSON object")
-        return parsed
-    raise TypeError("expected JSON object or JSON string")
-
-
-def _as_json_dict(value: Any) -> dict:
-    if value in ("", None):
-        return {}
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        parsed = json.loads(value)
-        if not isinstance(parsed, dict):
-            raise TypeError("expected JSON object")
-        return parsed
-    raise TypeError("expected JSON object or JSON string")
-
-
 def _node_to_dict(node: WorkflowNode) -> dict[str, Any]:
     hook_info = detect_node_hooks(node, _REPO_ROOT)
     return {
@@ -285,17 +215,8 @@ def _node_to_dict(node: WorkflowNode) -> dict[str, Any]:
         "system_prompt_preview": _safe_prompt_preview(node.system_prompt_path),
         "prompt_template_preview": _safe_prompt_preview(node.prompt_template_path),
         "use_prev_output": node.use_prev_output,
-        "allowed_tools": node.allowed_tools,
         "send_response": node.send_response,
-        "input_schema": node.input_schema,
-        "output_schema": node.output_schema,
         "timeout_seconds": node.timeout_seconds,
-        "max_llm_calls": node.max_llm_calls,
-        "route_label": node.route_label,
-        "route_description": node.route_description,
-        "router_mode": node.router_mode,
-        "router_patterns": node.router_patterns,
-        "metadata": node.metadata,
         "hooks": hook_info,
     }
 
@@ -321,8 +242,6 @@ def _build_preview_prompt(node: WorkflowNode) -> str:
     parts.append(f"Node Description: {node.description or '(empty)'}")
     if node.use_prev_output:
         parts.append("PREVIOUS_INPUT:\n{PREVIOUS_INPUT}")
-    if node.allowed_tools:
-        parts.append("TOOLS:\n" + "\n".join(f"- {tool}" for tool in node.allowed_tools))
     if template:
         parts.append("TEMPLATE:\n" + template)
     return "\n\n".join(parts).strip()
@@ -338,16 +257,14 @@ def _read_code_file(path_str: Any) -> str:
 
 
 def _resolve_node_tools(node: WorkflowNode, workflow_db_path: Path) -> list[str]:
-    if node.allowed_tools:
-        return node.allowed_tools
     graph = load_workflow_graph(workflow_db_path)
     candidates = graph.candidate_targets(node.id)
     if not any(candidate.enabled for candidate in candidates):
         return []
     resolved: list[str] = []
     for candidate in candidates:
-        label = candidate.route_label or candidate.name or candidate.id
-        description = candidate.route_description or candidate.description or ""
+        label = candidate.name or candidate.id
+        description = candidate.description or ""
         text = f"{candidate.id}: {label}"
         if description:
             text += f" — {description}"

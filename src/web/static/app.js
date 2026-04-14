@@ -167,11 +167,6 @@ function initLiteGraph() {
     if (lnode) renderNodeEditor(lnode);
   };
   S.canvas.onNodeDeselected = () => showHint();
-  S.canvas.onShowLinkMenu = link => {
-    const edgeData = S.linkEdgeMap[link.id];
-    if (edgeData) renderEdgeEditor(link.id, edgeData);
-    return false;
-  };
   S.graph.onConnectionChange = onConnectionChange;
 
   fitCanvas();
@@ -233,8 +228,6 @@ async function loadGraph() {
         dbId: edge.id,
         from_node_id: edge.from_node_id,
         to_node_id: edge.to_node_id,
-        condition_type: edge.condition_type,
-        condition_value: edge.condition_value,
       };
       S._prevLinkIds.add(link.id);
     });
@@ -342,22 +335,16 @@ async function handleLinkAdded(link) {
     const result = await POST('/api/workflow/edges', {
       from_node_id: fromNode.properties.node_id,
       to_node_id: toNode.properties.node_id,
-      condition_type: 'always',
-      condition_value: '',
     });
     S.linkEdgeMap[link.id] = {
       dbId: result.id,
       from_node_id: fromNode.properties.node_id,
       to_node_id: toNode.properties.node_id,
-      condition_type: 'always',
-      condition_value: '',
     };
     S.graphData.edges.push({
       id: result.id,
       from_node_id: fromNode.properties.node_id,
       to_node_id: toNode.properties.node_id,
-      condition_type: 'always',
-      condition_value: '',
     });
     updateBadge();
     toast('Edge added');
@@ -380,23 +367,32 @@ async function handleLinkRemoved(linkId) {
   }
 }
 
+document.addEventListener('keydown', async event => {
+  if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+  const link = S.canvas && (S.canvas.selected_link || S.canvas.over_link || S.canvas.over_link_center);
+  if (!link) return;
+  const edgeData = S.linkEdgeMap[link.id];
+  if (!edgeData) return;
+  event.preventDefault();
+  try {
+    await DEL(`/api/workflow/edges/${edgeData.dbId}`);
+    S.graph.removeLink(link.id);
+    await loadGraph();
+    toast('Edge deleted');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
 function showHint() {
   S.selectedNodeId = null;
   document.getElementById('editor-hint').classList.remove('hidden');
   document.getElementById('node-editor').classList.add('hidden');
-  document.getElementById('edge-editor').classList.add('hidden');
 }
 
 function showNodeEditor() {
   document.getElementById('editor-hint').classList.add('hidden');
   document.getElementById('node-editor').classList.remove('hidden');
-  document.getElementById('edge-editor').classList.add('hidden');
-}
-
-function showEdgeEditor() {
-  document.getElementById('editor-hint').classList.add('hidden');
-  document.getElementById('node-editor').classList.add('hidden');
-  document.getElementById('edge-editor').classList.remove('hidden');
 }
 
 function renderNodeEditor(lnode) {
@@ -420,21 +416,9 @@ function renderNodeEditor(lnode) {
   setValue('ne-system-prompt-path', node.system_prompt_path || '');
   setValue('ne-prompt-template-path', node.prompt_template_path || '');
   setValue('ne-timeout-seconds', String(node.timeout_seconds || 600));
-  setValue('ne-max-llm-calls', String(node.max_llm_calls || 0));
   setValue('ne-hook-pre', hooks.effective_pre_hook_path || '(none)', true);
   setValue('ne-hook-run', hooks.effective_executor_path || '(none)', true);
   setValue('ne-hook-post', hooks.effective_post_hook_path || '(none)', true);
-  setValue('ne-route-label', node.route_label || '');
-  setValue('ne-route-description', node.route_description || '');
-  setValue('ne-router-mode', node.router_mode || 'llm');
-  setValue('ne-router-patterns', (node.router_patterns || []).join('\n'));
-  setValue('ne-allowed-tools', (node.allowed_tools || []).join('\n'));
-  setValue('ne-input-schema', stringifyJson(node.input_schema));
-  setValue('ne-output-schema', stringifyJson(node.output_schema));
-  setValue('ne-metadata', stringifyJson(node.metadata || {}));
-  syncRouterPatternVisibility();
-
-  document.getElementById('ne-router-mode').onchange = syncRouterPatternVisibility;
   bindDraftInputs();
 
   document.getElementById('ne-details').onclick = async () => {
@@ -481,45 +465,6 @@ async function renderNodeDetails(node, hooks = {}) {
   document.getElementById('details-modal').classList.remove('hidden');
 }
 
-function renderEdgeEditor(linkId, edgeData) {
-  showEdgeEditor();
-  setValue('ee-from', edgeData.from_node_id, true);
-  setValue('ee-to', edgeData.to_node_id, true);
-  setValue('ee-cond-type', edgeData.condition_type || 'always');
-  setValue('ee-cond-value', edgeData.condition_value || '');
-  syncEdgeValueVisibility();
-  document.getElementById('ee-cond-type').onchange = syncEdgeValueVisibility;
-
-  document.getElementById('ee-save').onclick = async () => {
-    try {
-      await DEL(`/api/workflow/edges/${edgeData.dbId}`);
-      await POST('/api/workflow/edges', {
-        from_node_id: edgeData.from_node_id,
-        to_node_id: edgeData.to_node_id,
-        condition_type: document.getElementById('ee-cond-type').value,
-        condition_value: document.getElementById('ee-cond-value').value.trim(),
-      });
-      await loadGraph();
-      toast('Edge saved');
-      showHint();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  };
-
-  document.getElementById('ee-delete').onclick = async () => {
-    try {
-      await DEL(`/api/workflow/edges/${edgeData.dbId}`);
-      S.graph.removeLink(linkId);
-      await loadGraph();
-      toast('Edge deleted');
-      showHint();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  };
-}
-
 function collectNodeForm(nodeId) {
   return {
     id: nodeId,
@@ -536,15 +481,6 @@ function collectNodeForm(nodeId) {
     system_prompt_path: blankToNull(document.getElementById('ne-system-prompt-path').value),
     prompt_template_path: blankToNull(document.getElementById('ne-prompt-template-path').value),
     timeout_seconds: parseInt(document.getElementById('ne-timeout-seconds').value, 10),
-    max_llm_calls: parseInt(document.getElementById('ne-max-llm-calls').value, 10),
-    route_label: blankToNull(document.getElementById('ne-route-label').value),
-    route_description: blankToNull(document.getElementById('ne-route-description').value),
-    router_mode: document.getElementById('ne-router-mode').value,
-    router_patterns: splitLines(document.getElementById('ne-router-patterns').value),
-    allowed_tools: splitLines(document.getElementById('ne-allowed-tools').value),
-    input_schema: parseJsonOrNull(document.getElementById('ne-input-schema').value),
-    output_schema: parseJsonOrNull(document.getElementById('ne-output-schema').value),
-    metadata: parseJsonOrObject(document.getElementById('ne-metadata').value),
   };
 }
 
@@ -562,15 +498,6 @@ function bindDraftInputs() {
     'ne-system-prompt-path',
     'ne-prompt-template-path',
     'ne-timeout-seconds',
-    'ne-max-llm-calls',
-    'ne-route-label',
-    'ne-route-description',
-    'ne-router-mode',
-    'ne-router-patterns',
-    'ne-allowed-tools',
-    'ne-input-schema',
-    'ne-output-schema',
-    'ne-metadata',
   ].forEach(id => {
     const el = document.getElementById(id);
     if (!el || el.dataset.draftBound === 'true') return;
@@ -611,37 +538,7 @@ function collectNodeFormLoose(nodeId) {
     system_prompt_path: blankToNull(document.getElementById('ne-system-prompt-path').value),
     prompt_template_path: blankToNull(document.getElementById('ne-prompt-template-path').value),
     timeout_seconds: parseInt(document.getElementById('ne-timeout-seconds').value || '600', 10),
-    max_llm_calls: parseInt(document.getElementById('ne-max-llm-calls').value || '0', 10),
-    route_label: blankToNull(document.getElementById('ne-route-label').value),
-    route_description: blankToNull(document.getElementById('ne-route-description').value),
-    router_mode: document.getElementById('ne-router-mode').value,
-    router_patterns: splitLines(document.getElementById('ne-router-patterns').value),
-    allowed_tools: splitLines(document.getElementById('ne-allowed-tools').value),
-    input_schema: document.getElementById('ne-input-schema').value.trim(),
-    output_schema: document.getElementById('ne-output-schema').value.trim(),
-    metadata: document.getElementById('ne-metadata').value.trim(),
   };
-}
-
-function stringifyJson(value) {
-  if (!value || (typeof value === 'object' && Object.keys(value).length === 0)) return '';
-  return JSON.stringify(value, null, 2);
-}
-
-function parseJsonOrNull(value) {
-  const text = value.trim();
-  if (!text) return null;
-  return JSON.parse(text);
-}
-
-function parseJsonOrObject(value) {
-  const text = value.trim();
-  if (!text) return {};
-  return JSON.parse(text);
-}
-
-function splitLines(value) {
-  return value.split('\n').map(line => line.trim()).filter(Boolean);
 }
 
 function blankToNull(value) {
@@ -872,16 +769,6 @@ function formatFlags(node) {
   return flags.length ? flags.join(' | ') : '(none)';
 }
 
-function syncRouterPatternVisibility() {
-  const show = document.getElementById('ne-router-mode').value === 'direct_regex';
-  document.getElementById('ne-patterns-wrap').style.display = show ? '' : 'none';
-}
-
-function syncEdgeValueVisibility() {
-  const show = document.getElementById('ee-cond-type').value !== 'always';
-  document.getElementById('ee-value-wrap').style.display = show ? '' : 'none';
-}
-
 function findLiteNodeByDbId(nodeId) {
   return S.graph._nodes.find(node => node.properties.node_id === nodeId) || null;
 }
@@ -945,15 +832,6 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
       system_prompt_path: null,
       prompt_template_path: null,
       timeout_seconds: 600,
-      max_llm_calls: 0,
-      route_label: nodeId,
-      route_description: '',
-      router_mode: 'llm',
-      router_patterns: [],
-      allowed_tools: [],
-      input_schema: null,
-      output_schema: null,
-      metadata: {},
     });
     document.getElementById('modal').classList.add('hidden');
     await loadGraph();
@@ -1002,12 +880,7 @@ document.getElementById('btn-save-all').addEventListener('click', async () => {
 });
 
 function normalizeDraftForSave(draft) {
-  return {
-    ...draft,
-    input_schema: typeof draft.input_schema === 'string' ? parseJsonOrNull(draft.input_schema) : draft.input_schema,
-    output_schema: typeof draft.output_schema === 'string' ? parseJsonOrNull(draft.output_schema) : draft.output_schema,
-    metadata: typeof draft.metadata === 'string' ? parseJsonOrObject(draft.metadata) : draft.metadata,
-  };
+  return { ...draft };
 }
 
 document.getElementById('btn-add-edge').addEventListener('click', () => {

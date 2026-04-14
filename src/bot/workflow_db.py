@@ -1,7 +1,6 @@
 """SQLite-backed node-first workflow graph storage."""
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,17 +22,8 @@ class WorkflowNode:
     system_prompt_path: str | None
     prompt_template_path: str | None
     use_prev_output: bool
-    allowed_tools: list[str]
     send_response: bool
-    input_schema: dict | None
-    output_schema: dict | None
     timeout_seconds: int
-    max_llm_calls: int
-    route_label: str | None
-    route_description: str | None
-    router_mode: str
-    router_patterns: list[str]
-    metadata: dict
 
 
 @dataclass(frozen=True)
@@ -41,8 +31,6 @@ class WorkflowEdge:
     id: int
     from_node_id: str
     to_node_id: str
-    condition_type: str
-    condition_value: str
 
 
 @dataclass(frozen=True)
@@ -85,25 +73,14 @@ CREATE TABLE IF NOT EXISTS workflow_nodes (
     system_prompt_path TEXT NOT NULL DEFAULT '',
     prompt_template_path TEXT NOT NULL DEFAULT '',
     use_prev_output INTEGER NOT NULL DEFAULT 1,
-    allowed_tools TEXT NOT NULL DEFAULT '[]',
     send_response INTEGER NOT NULL DEFAULT 1,
-    input_schema TEXT NOT NULL DEFAULT '',
-    output_schema TEXT NOT NULL DEFAULT '',
-    timeout_seconds INTEGER NOT NULL DEFAULT 600,
-    max_llm_calls INTEGER NOT NULL DEFAULT 0,
-    route_label TEXT NOT NULL DEFAULT '',
-    route_description TEXT NOT NULL DEFAULT '',
-    router_mode TEXT NOT NULL DEFAULT 'llm',
-    router_patterns TEXT NOT NULL DEFAULT '[]',
-    metadata TEXT NOT NULL DEFAULT '{}'
+    timeout_seconds INTEGER NOT NULL DEFAULT 600
 );
 
 CREATE TABLE IF NOT EXISTS workflow_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_node_id TEXT NOT NULL,
     to_node_id TEXT NOT NULL,
-    condition_type TEXT NOT NULL DEFAULT 'always',
-    condition_value TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (from_node_id) REFERENCES workflow_nodes(id),
     FOREIGN KEY (to_node_id) REFERENCES workflow_nodes(id)
 );
@@ -126,17 +103,8 @@ _SEED_NODES: list[WorkflowNode] = [
         system_prompt_path="nodes/intent-router/system.md",
         prompt_template_path="nodes/intent-router/tool_router.md",
         use_prev_output=False,
-        allowed_tools=[],
         send_response=False,
-        input_schema={"type": "object"},
-        output_schema={"type": "object"},
         timeout_seconds=120,
-        max_llm_calls=1,
-        route_label=None,
-        route_description=None,
-        router_mode="llm",
-        router_patterns=[],
-        metadata={},
     ),
     WorkflowNode(
         id="finance",
@@ -153,17 +121,8 @@ _SEED_NODES: list[WorkflowNode] = [
         system_prompt_path="nodes/finance/system.md",
         prompt_template_path="nodes/finance/planner.md",
         use_prev_output=True,
-        allowed_tools=[],
         send_response=False,
-        input_schema={"type": "object"},
-        output_schema={"type": "object"},
         timeout_seconds=180,
-        max_llm_calls=1,
-        route_label="finance",
-        route_description="處理所有財經相關需求，包含來源、筆記、報告生成與排程管理。",
-        router_mode="llm",
-        router_patterns=[],
-        metadata={},
     ),
     WorkflowNode(
         id="finance-report",
@@ -180,17 +139,8 @@ _SEED_NODES: list[WorkflowNode] = [
         system_prompt_path="nodes/finance-report/system.md",
         prompt_template_path=None,
         use_prev_output=True,
-        allowed_tools=[],
         send_response=True,
-        input_schema={"type": "object"},
-        output_schema={"type": "object"},
         timeout_seconds=7200,
-        max_llm_calls=1,
-        route_label=None,
-        route_description=None,
-        router_mode="llm",
-        router_patterns=[],
-        metadata={},
     ),
     WorkflowNode(
         id="finance-schedule",
@@ -207,17 +157,8 @@ _SEED_NODES: list[WorkflowNode] = [
         system_prompt_path=None,
         prompt_template_path=None,
         use_prev_output=True,
-        allowed_tools=[],
         send_response=True,
-        input_schema={"type": "object"},
-        output_schema={"type": "object"},
         timeout_seconds=60,
-        max_llm_calls=0,
-        route_label=None,
-        route_description=None,
-        router_mode="llm",
-        router_patterns=[],
-        metadata={},
     ),
     WorkflowNode(
         id="echo",
@@ -234,17 +175,8 @@ _SEED_NODES: list[WorkflowNode] = [
         system_prompt_path=None,
         prompt_template_path=None,
         use_prev_output=True,
-        allowed_tools=[],
         send_response=True,
-        input_schema={"type": "object"},
-        output_schema={"type": "object"},
         timeout_seconds=30,
-        max_llm_calls=0,
-        route_label="echo",
-        route_description="當使用者要求測試 echo 或回傳一段原文時使用。",
-        router_mode="direct_regex",
-        router_patterns=[r"啟用echo node\s+(?P<text>.+)"],
-        metadata={},
     ),
 ]
 
@@ -285,19 +217,8 @@ def _seed_nodes_and_edges(conn: sqlite3.Connection) -> None:
                 id=0,
                 from_node_id=from_id,
                 to_node_id=to_id,
-                condition_type="always",
-                condition_value="",
             ),
         )
-
-
-def _json_load(value: str, fallback: object) -> object:
-    if not value:
-        return fallback
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return fallback
 
 
 def _row_to_node(row: sqlite3.Row | tuple) -> WorkflowNode:
@@ -316,17 +237,8 @@ def _row_to_node(row: sqlite3.Row | tuple) -> WorkflowNode:
         system_prompt_path=row[11] or None,
         prompt_template_path=row[12] or None,
         use_prev_output=bool(row[13]),
-        allowed_tools=list(_json_load(row[14], [])),
-        send_response=bool(row[15]),
-        input_schema=_json_load(row[16], None),
-        output_schema=_json_load(row[17], None),
-        timeout_seconds=int(row[18]),
-        max_llm_calls=int(row[19]),
-        route_label=row[20] or None,
-        route_description=row[21] or None,
-        router_mode=row[22] or "llm",
-        router_patterns=list(_json_load(row[23], [])),
-        metadata=dict(_json_load(row[24], {})),
+        send_response=bool(row[14]),
+        timeout_seconds=int(row[15]),
     )
 
 
@@ -338,15 +250,13 @@ def load_workflow_graph(db_path: Path) -> WorkflowGraph:
                    executor_path, pre_hook_path, post_hook_path,
                    COALESCE(NULLIF(system_prompt_path, ''), '') AS system_prompt_path,
                    COALESCE(NULLIF(prompt_template_path, ''), '') AS prompt_template_path,
-                   use_prev_output, allowed_tools, send_response,
-                   input_schema, output_schema, timeout_seconds, max_llm_calls,
-                   route_label, route_description, router_mode, router_patterns, metadata
+                   use_prev_output, send_response, timeout_seconds
             FROM workflow_nodes
             ORDER BY start_node DESC, id ASC
             """
         ).fetchall()
         edge_rows = conn.execute(
-            "SELECT id, from_node_id, to_node_id, condition_type, condition_value FROM workflow_edges ORDER BY id ASC"
+            "SELECT id, from_node_id, to_node_id FROM workflow_edges ORDER BY id ASC"
         ).fetchall()
 
     nodes = [_row_to_node(row) for row in rows]
@@ -355,8 +265,6 @@ def load_workflow_graph(db_path: Path) -> WorkflowGraph:
             id=int(row[0]),
             from_node_id=row[1],
             to_node_id=row[2],
-            condition_type=row[3],
-            condition_value=row[4],
         )
         for row in edge_rows
     ]
@@ -400,17 +308,8 @@ def _upsert_node_conn(conn: sqlite3.Connection, node: WorkflowNode) -> None:
         "system_prompt_path",
         "prompt_template_path",
         "use_prev_output",
-        "allowed_tools",
         "send_response",
-        "input_schema",
-        "output_schema",
         "timeout_seconds",
-        "max_llm_calls",
-        "route_label",
-        "route_description",
-        "router_mode",
-        "router_patterns",
-        "metadata",
     ]
     values: list[object] = [
         node.id,
@@ -427,17 +326,8 @@ def _upsert_node_conn(conn: sqlite3.Connection, node: WorkflowNode) -> None:
         node.system_prompt_path or "",
         node.prompt_template_path or "",
         1 if node.use_prev_output else 0,
-        json.dumps(node.allowed_tools, ensure_ascii=False),
         1 if node.send_response else 0,
-        json.dumps(node.input_schema, ensure_ascii=False) if node.input_schema is not None else "",
-        json.dumps(node.output_schema, ensure_ascii=False) if node.output_schema is not None else "",
         node.timeout_seconds,
-        node.max_llm_calls,
-        node.route_label or "",
-        node.route_description or "",
-        node.router_mode,
-        json.dumps(node.router_patterns, ensure_ascii=False),
-        json.dumps(node.metadata, ensure_ascii=False),
     ]
     update_columns = [column for column in insert_columns if column != "id"]
     conn.execute(
@@ -469,32 +359,28 @@ def _upsert_edge_conn(conn: sqlite3.Connection, edge: WorkflowEdge) -> WorkflowE
     existing = conn.execute(
         """
         SELECT id FROM workflow_edges
-        WHERE from_node_id = ? AND to_node_id = ? AND condition_type = ? AND condition_value = ?
+        WHERE from_node_id = ? AND to_node_id = ?
         LIMIT 1
         """,
-        (edge.from_node_id, edge.to_node_id, edge.condition_type, edge.condition_value),
+        (edge.from_node_id, edge.to_node_id),
     ).fetchone()
     if existing:
         return WorkflowEdge(
             id=int(existing[0]),
             from_node_id=edge.from_node_id,
             to_node_id=edge.to_node_id,
-            condition_type=edge.condition_type,
-            condition_value=edge.condition_value,
         )
     cursor = conn.execute(
         """
-        INSERT INTO workflow_edges (from_node_id, to_node_id, condition_type, condition_value)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO workflow_edges (from_node_id, to_node_id)
+        VALUES (?, ?)
         """,
-        (edge.from_node_id, edge.to_node_id, edge.condition_type, edge.condition_value),
+        (edge.from_node_id, edge.to_node_id),
     )
     return WorkflowEdge(
         id=int(cursor.lastrowid),
         from_node_id=edge.from_node_id,
         to_node_id=edge.to_node_id,
-        condition_type=edge.condition_type,
-        condition_value=edge.condition_value,
     )
 
 

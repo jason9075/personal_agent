@@ -30,7 +30,7 @@
     <div id="tab-editor" class="tab-body">
       <div id="editor-hint" class="panel-hint">
         <p>Select a node to edit its workflow settings.</p>
-        <p class="muted">Right-click a connection to edit its condition.</p>
+        <p class="muted">Use the graph to add or remove allowed connections between nodes.</p>
       </div>
 
       <div id="node-editor" class="hidden">
@@ -88,9 +88,6 @@
           <label class="field-label">Timeout Seconds</label>
           <input type="number" id="ne-timeout-seconds" min="1">
 
-          <label class="field-label">Max LLM Calls</label>
-          <input type="number" id="ne-max-llm-calls" min="0">
-
           <div class="hint-box">
             <div class="kv-row"><span>PRE</span><code id="ne-hook-pre"></code></div>
             <div class="kv-row"><span>RUN</span><code id="ne-hook-run"></code></div>
@@ -98,73 +95,9 @@
           </div>
         </section>
 
-        <hr>
-
-        <section>
-          <h4>Routing</h4>
-          <label class="field-label">Route Label</label>
-          <input type="text" id="ne-route-label">
-
-          <label class="field-label">Route Description</label>
-          <textarea id="ne-route-description" rows="3"></textarea>
-
-          <label class="field-label">Router Mode</label>
-          <select id="ne-router-mode">
-            <option value="direct_regex">direct_regex</option>
-            <option value="llm">llm</option>
-          </select>
-
-          <div id="ne-patterns-wrap">
-            <label class="field-label">Router Patterns <span class="muted">one per line</span></label>
-            <textarea id="ne-router-patterns" rows="4" spellcheck="false"></textarea>
-          </div>
-        </section>
-
-        <hr>
-
-        <section>
-          <h4>Prompt & Payload</h4>
-          <label class="field-label">Allowed Tools <span class="muted">one per line</span></label>
-          <textarea id="ne-allowed-tools" rows="3" spellcheck="false"></textarea>
-
-          <label class="field-label">Input Schema JSON</label>
-          <textarea id="ne-input-schema" rows="4" spellcheck="false"></textarea>
-
-          <label class="field-label">Output Schema JSON</label>
-          <textarea id="ne-output-schema" rows="4" spellcheck="false"></textarea>
-
-          <label class="field-label">Metadata JSON</label>
-          <textarea id="ne-metadata" rows="4" spellcheck="false"></textarea>
-        </section>
-
         <div class="btn-row">
           <button id="ne-delete" class="btn btn-danger btn-sm">Delete</button>
         </div>
-      </div>
-
-      <div id="edge-editor" class="hidden">
-        <section>
-          <h4>Connection</h4>
-          <div class="kv-row"><span>From</span><code id="ee-from"></code></div>
-          <div class="kv-row"><span>To</span><code id="ee-to"></code></div>
-
-          <label class="field-label">Condition Type</label>
-          <select id="ee-cond-type">
-            <option value="always">always</option>
-            <option value="returncode_eq">returncode_eq</option>
-            <option value="output_contains">output_contains</option>
-          </select>
-
-          <div id="ee-value-wrap">
-            <label class="field-label">Value</label>
-            <input type="text" id="ee-cond-value">
-          </div>
-
-          <div class="btn-row">
-            <button id="ee-save" class="btn btn-primary btn-sm">Save</button>
-            <button id="ee-delete" class="btn btn-danger btn-sm">Delete</button>
-          </div>
-        </section>
       </div>
     </div>
   </aside>

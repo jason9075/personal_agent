@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .logging_utils import get_logger
 from .nodes import NodeActionResult, format_direct_node_reply
-from .workflow_db import WorkflowEdge, WorkflowGraph, WorkflowNode, load_workflow_graph
+from .workflow_db import WorkflowGraph, WorkflowNode, load_workflow_graph
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,7 @@ def execute_workflow(
             logger.info("Node %s send_response=true output_len=%s", current.id, len(result.output_text))
             return result.output_text
 
-        next_node = _select_successor(graph, current.id, result.action_result)
+        next_node = _first_enabled_successor(graph, current.id)
         if next_node is None:
             logger.info("Node %s has no matching successor; returning direct output", current.id)
             return result.output_text
@@ -109,7 +109,7 @@ def _execute_node(
             {
                 "id": candidate.id,
                 "name": candidate.name,
-                "description": candidate.route_description or candidate.description or candidate.name,
+                "description": candidate.description or candidate.name,
                 "model_name": candidate.model_name,
             }
             for candidate in graph.candidate_targets(node.id)
@@ -243,29 +243,12 @@ def _run_hook(
     )
 
 
-def _select_successor(
+def _first_enabled_successor(
     graph: WorkflowGraph,
     from_node_id: str,
-    result: NodeActionResult | None,
 ) -> WorkflowNode | None:
-    if result is None:
-        return None
     for edge in graph.outgoing(from_node_id):
-        if _edge_condition_met(edge, result):
-            next_node = graph.node_by_id(edge.to_node_id)
-            if next_node and next_node.enabled:
-                return next_node
+        next_node = graph.node_by_id(edge.to_node_id)
+        if next_node and next_node.enabled:
+            return next_node
     return None
-
-
-def _edge_condition_met(edge: WorkflowEdge, result: NodeActionResult) -> bool:
-    if edge.condition_type == "always":
-        return True
-    if edge.condition_type == "returncode_eq":
-        try:
-            return result.returncode == int(edge.condition_value)
-        except (TypeError, ValueError):
-            return False
-    if edge.condition_type == "output_contains":
-        return edge.condition_value in (result.stdout or "")
-    return False
