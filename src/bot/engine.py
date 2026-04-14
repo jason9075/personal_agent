@@ -8,13 +8,13 @@ from pathlib import Path
 
 from .config import GEMINI_TOOL_MODEL
 from .logging_utils import get_logger
-from .prompts import load_prompt, load_prompt_path
-from .skills import (
-    SkillActionResult,
+from .nodes import (
+    NodeActionResult,
     _route_finance_report_direct,
     _route_finance_schedule_direct,
-    format_direct_skill_reply,
+    format_direct_node_reply,
 )
+from .prompts import load_prompt, load_prompt_path
 from .workflow_db import WorkflowEdge, WorkflowGraph, WorkflowNode, load_workflow_graph, try_pattern_route
 
 
@@ -28,7 +28,7 @@ class RouteDecision:
 class NodeExecutionResult:
     node_id: str
     output_text: str
-    action_result: SkillActionResult | None = None
+    action_result: NodeActionResult | None = None
     route_decision: RouteDecision | None = None
 
 
@@ -105,7 +105,7 @@ def _execute_node(
         _run_hook(node.id, "pre_hook", node.pre_hook_path, node_input, repo_root)
 
     action_result = _execute_executor(node, node_input, prev_output, repo_root)
-    output_text = format_direct_skill_reply(action_result)
+    output_text = format_direct_node_reply(action_result)
 
     if node.post_hook_path:
         post_result = _run_hook(
@@ -255,7 +255,7 @@ def _execute_executor(
     node_input: dict,
     prev_output: str,
     repo_root: Path,
-) -> SkillActionResult:
+) -> NodeActionResult:
     if not node.executor_path:
         raise RuntimeError(f"node '{node.id}' has no executor_path")
 
@@ -279,8 +279,8 @@ def _execute_executor(
         check=False,
         timeout=node.timeout_seconds,
     )
-    return SkillActionResult(
-        tool_name=node.id,
+    return NodeActionResult(
+        node_id=node.id,
         args=payload,
         stdout=result.stdout.strip(),
         stderr=result.stderr.strip(),
@@ -294,7 +294,7 @@ def _run_hook(
     hook_path: str,
     payload: dict,
     repo_root: Path,
-) -> SkillActionResult:
+) -> NodeActionResult:
     script_path = repo_root / hook_path
     if not script_path.exists():
         raise RuntimeError(f"{stage_name} for node '{node_id}' not found: {script_path}")
@@ -306,8 +306,8 @@ def _run_hook(
         cwd=repo_root,
         check=False,
     )
-    return SkillActionResult(
-        tool_name=f"{node_id}:{stage_name}",
+    return NodeActionResult(
+        node_id=f"{node_id}:{stage_name}",
         args=payload,
         stdout=result.stdout.strip(),
         stderr=result.stderr.strip(),
@@ -318,7 +318,7 @@ def _run_hook(
 def _select_successor(
     graph: WorkflowGraph,
     from_node_id: str,
-    result: SkillActionResult | None,
+    result: NodeActionResult | None,
 ) -> WorkflowNode | None:
     if result is None:
         return None
@@ -330,7 +330,7 @@ def _select_successor(
     return None
 
 
-def _edge_condition_met(edge: WorkflowEdge, result: SkillActionResult) -> bool:
+def _edge_condition_met(edge: WorkflowEdge, result: NodeActionResult) -> bool:
     if edge.condition_type == "always":
         return True
     if edge.condition_type == "returncode_eq":

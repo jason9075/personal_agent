@@ -5,4 +5,4 @@
 - 聚焦投資判斷、總經與市場重點
 - 以繁體中文（台灣用語）產生結構化財經摘要
 
-目前主要摘要規則由 `src/finance_report/prompt/finance_report_analysis.md` 控制。
+目前主要摘要規則由 `nodes/finance-report/impl/prompt/finance_report_analysis.md` 控制。

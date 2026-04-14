@@ -1,11 +1,11 @@
 """Shared node execution helpers and routing utilities.
 
 Public surface used by engine.py and bot.py:
-  - SkillActionResult       — generic subprocess result dataclass
-  - execute_skill_generic   — generic --args-json subprocess call
+  - NodeActionResult        — generic subprocess result dataclass
+  - execute_node_generic    — generic --args-json subprocess call
   - render_general_reply    — fallback LLM reply used by general-reply node
-  - format_direct_skill_reply — format stdout as Discord reply
-  - execute_schedule_action — shared impl for finance-schedule/run.py
+  - format_direct_node_reply — format stdout as Discord reply
+  - execute_schedule_action — shared impl for nodes/finance-schedule/run.py
 
 Internal routing helpers (used by engine._try_direct_route):
   - _route_finance_report_direct
@@ -19,7 +19,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import SCHEDULE_DB_PATH, SKILLS_DIR
+from .config import NODES_DIR, SCHEDULE_DB_PATH
 from .logging_utils import get_logger
 from .prompts import load_prompt, load_prompt_path
 from .schedule_db import create_job, delete_job, ensure_db, list_jobs, update_job
@@ -27,8 +27,8 @@ from .scheduler import parse_cron
 
 
 @dataclass(frozen=True)
-class SkillActionResult:
-    tool_name: str
+class NodeActionResult:
+    node_id: str
     args: dict
     stdout: str
     stderr: str
@@ -36,21 +36,21 @@ class SkillActionResult:
 
 
 # ---------------------------------------------------------------------------
-# Generic skill execution (--args-json protocol)
+# Generic node execution (--args-json protocol)
 # ---------------------------------------------------------------------------
 
 
-def execute_skill_generic(
-    skill_id: str,
+def execute_node_generic(
+    node_id: str,
     script_path: str,
     args: dict,
     repo_root: Path,
-) -> SkillActionResult:
-    """Run a skill via the --args-json protocol."""
+) -> NodeActionResult:
+    """Run a node executor via the --args-json protocol."""
     logger = get_logger()
     run_py = repo_root / script_path
     if not run_py.exists():
-        raise RuntimeError(f"skill script not found: {run_py}")
+        raise RuntimeError(f"node executor not found: {run_py}")
 
     cmd = ["python", str(run_py), "--args-json", json.dumps(args, ensure_ascii=False)]
     result = subprocess.run(
@@ -61,13 +61,13 @@ def execute_skill_generic(
         check=False,
     )
     logger.info(
-        "Executed skill skill=%s returncode=%s cmd=%s",
-        skill_id,
+        "Executed node node=%s returncode=%s cmd=%s",
+        node_id,
         result.returncode,
         cmd,
     )
-    return SkillActionResult(
-        tool_name=skill_id,
+    return NodeActionResult(
+        node_id=node_id,
         args=args,
         stdout=result.stdout.strip(),
         stderr=result.stderr.strip(),
@@ -80,11 +80,11 @@ def execute_skill_generic(
 # ---------------------------------------------------------------------------
 
 
-def format_direct_skill_reply(action_result: SkillActionResult) -> str:
+def format_direct_node_reply(action_result: NodeActionResult) -> str:
     """Return a direct Discord reply without Pass 2 synthesis."""
     output = action_result.stdout.strip() or action_result.stderr.strip() or "(no output)"
     if action_result.returncode != 0:
-        return f"技能執行失敗：\n```text\n{output[:3500]}\n```"
+        return f"節點執行失敗：\n```text\n{output[:3500]}\n```"
     return output[:3500]
 
 
@@ -94,7 +94,7 @@ def render_general_reply(
     recent_context: str = "",
     system_prompt_path: str | None = None,
 ) -> str:
-    """Generate a normal Discord reply when no skill is selected."""
+    """Generate a normal Discord reply when no workflow node is selected."""
     logger = get_logger()
     prompt_template = load_prompt("general_reply.md")
     prompt = prompt_template.format(
@@ -111,14 +111,14 @@ def render_general_reply(
         "--sandbox",
         "workspace-write",
         "-C",
-        str(SKILLS_DIR.parents[0]),
+        str(NODES_DIR.parents[0]),
     ]
     result = subprocess.run(
         cmd,
         input=prompt,
         capture_output=True,
         text=True,
-        cwd=SKILLS_DIR.parents[0],
+        cwd=NODES_DIR.parents[0],
         check=False,
     )
     logger.info(
@@ -133,7 +133,7 @@ def render_general_reply(
 
 
 # ---------------------------------------------------------------------------
-# Finance schedule shared implementation (used by skills/finance-schedule/run.py)
+# Finance schedule shared implementation (used by nodes/finance-schedule/run.py)
 # ---------------------------------------------------------------------------
 
 

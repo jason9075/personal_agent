@@ -63,7 +63,7 @@ class FinanceScheduler:
     async def _run_job(self, job: ScheduledJob, now: datetime) -> None:
         logger = get_logger()
         logger.info("Scheduler running job_id=%s name=%s", job.id, job.name)
-        cmd = ["python", "-m", "src.finance_report.runner", "--workers", str(job.workers)]
+        cmd = ["python", "nodes/finance-report/run.py", "--workers", str(job.workers)]
         if job.source_id:
             cmd.extend(["--source", job.source_id])
 

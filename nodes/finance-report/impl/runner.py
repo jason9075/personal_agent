@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> None:
     if not bot_token:
         raise RuntimeError("DISCORD_BOT_TOKEN not set")
 
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[3]
     configs = load_configs(cli_args.source_id)
     worker_count = min(cli_args.workers, len(configs))
     print(f"[finance] processing {len(configs)} source(s) with {worker_count} worker(s)", flush=True)

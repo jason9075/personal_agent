@@ -174,7 +174,7 @@ _SEED_NODES: list[WorkflowNode] = [
         pass_index=2,
         start_node=False,
         enabled=True,
-        executor_path="skills/finance-report/run.py",
+        executor_path="nodes/finance-report/run.py",
         pre_hook_path=None,
         post_hook_path=None,
         system_prompt_path="nodes/finance-report/system.md",
@@ -200,7 +200,7 @@ _SEED_NODES: list[WorkflowNode] = [
         pass_index=2,
         start_node=False,
         enabled=True,
-        executor_path="skills/finance-schedule/run.py",
+        executor_path="nodes/finance-schedule/run.py",
         pre_hook_path=None,
         post_hook_path=None,
         system_prompt_path=None,
@@ -226,7 +226,7 @@ _SEED_NODES: list[WorkflowNode] = [
         pass_index=2,
         start_node=False,
         enabled=True,
-        executor_path="skills/general-reply/run.py",
+        executor_path="nodes/general-reply/run.py",
         pre_hook_path=None,
         post_hook_path=None,
         system_prompt_path="nodes/general-reply/system.md",
@@ -252,7 +252,7 @@ _SEED_NODES: list[WorkflowNode] = [
         pass_index=2,
         start_node=False,
         enabled=True,
-        executor_path="skills/echo/run.py",
+        executor_path="nodes/echo/run.py",
         pre_hook_path=None,
         post_hook_path=None,
         system_prompt_path=None,
@@ -267,7 +267,7 @@ _SEED_NODES: list[WorkflowNode] = [
         route_label="echo",
         route_description="當使用者要求測試 echo 或回傳一段原文時使用。",
         router_mode="direct_regex",
-        router_patterns=[r"啟用echo skill\s+(?P<text>.+)"],
+        router_patterns=[r"啟用echo node\s+(?P<text>.+)"],
         metadata={},
     ),
 ]
@@ -318,9 +318,9 @@ def _migrate_legacy_nodes(conn: sqlite3.Connection) -> None:
             """
             UPDATE workflow_nodes
             SET executor_path = CASE skill_id
-                WHEN 'finance-report' THEN 'skills/finance-report/run.py'
-                WHEN 'finance-schedule' THEN 'skills/finance-schedule/run.py'
-                WHEN 'echo' THEN 'skills/echo/run.py'
+                WHEN 'finance-report' THEN 'nodes/finance-report/run.py'
+                WHEN 'finance-schedule' THEN 'nodes/finance-schedule/run.py'
+                WHEN 'echo' THEN 'nodes/echo/run.py'
                 ELSE executor_path
             END
             WHERE executor_path = ''

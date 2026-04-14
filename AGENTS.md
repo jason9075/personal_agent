@@ -32,18 +32,18 @@ Key modules:
 |------|------|
 | `src/bot/engine.py` | workflow execution loop, router behavior, node lifecycle |
 | `src/bot/workflow_db.py` | SQLite schema, migrations, node/edge CRUD, hook scanning |
-| `src/bot/skills.py` | shared route parsing and Codex reply helpers |
+| `src/bot/nodes.py` | shared route parsing and node execution helpers |
 | `src/bot/bot.py` | Discord event handler + FastAPI server |
 | `src/web/app.py` | REST API for DAG management |
 | `src/web/static/app.js` | LiteGraph DAG editor |
-| `skills/*/run.py` | node executors |
+| `nodes/*/run.py` | node executors |
+| `nodes/finance-report/impl/` | finance RSS pipeline, STT, digest |
 
 ## Module Organisation
 
 - `src/bot/` — bot runtime, engine, workflow DB, scheduler, prompts
 - `src/web/` — FastAPI app, templates, static files
-- `src/finance_report/` — RSS finance pipeline
-- `skills/*/` — executor scripts used by workflow nodes
+- `nodes/*/` — executor scripts and node-local pipelines
 - `config/` — local finance source config
 - `db/` — runtime SQLite state, git-ignored
 
@@ -66,7 +66,7 @@ Prefer `just` targets over ad hoc shell commands.
 
 - 4-space indentation, type hints on public functions.
 - `snake_case` for functions and variables, `UPPER_SNAKE_CASE` for env-backed constants.
-- Prompts must live under `src/bot/prompt/` and load dynamically at runtime.
+- Prompts must live in repo markdown files and load dynamically at runtime.
 - Avoid hardcoding workflow structure in Python when the DAG can express it.
 
 ## Testing
@@ -74,7 +74,7 @@ Prefer `just` targets over ad hoc shell commands.
 No formal test suite yet. Minimum validation:
 
 ```bash
-python -m compileall src skills
+python -m compileall src nodes
 ruff check src
 mypy src
 ```

@@ -1,4 +1,4 @@
-"""Private Discord bot with N-pass skill workflow execution."""
+"""Private Discord bot with node-first workflow execution."""
 from __future__ import annotations
 
 import asyncio

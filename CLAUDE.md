@@ -29,18 +29,13 @@ ruff check src/
 
 ## Architecture: N-Pass Workflow Engine
 
-**Pass 1 — Routing:** `engine.route_pass1()` iterates enabled Pass-1 nodes from `db/workflow.sqlite3`. For each node with `router_mode='direct_regex'`: tries built-in router (finance-report, finance-schedule) or named-group regex patterns. Falls back to LLM router for `router_mode='llm'` nodes — the LLM only sees skills reachable at this pass.
+**Pass 1 — Routing:** router nodes inspect enabled outgoing edges from `db/workflow.sqlite3`. For candidates with `router_mode='direct_regex'`, the engine tries built-in direct routing first (finance-report, finance-schedule) and then named-group regex patterns. Otherwise it falls back to the LLM router, which only sees reachable next nodes.
 
-If a node matches: sends `"已啟用 skill: {id}"` to Discord, then executes.
+If a node matches: sends `"已啟用 {id}"` to Discord, then executes.
 
-**Execution — `--args-json` protocol:** `engine.execute_and_synthesize()` calls `python skills/<id>/run.py --args-json '{...}'`. Subprocess writes result to stdout; engine captures it.
+**Execution — `--args-json` protocol:** the engine calls `python nodes/<id>/run.py --args-json '{...}'`. Subprocess writes result to stdout; engine captures it.
 
-**Pass 2 — Synthesis:** controlled by `pass2_mode` in the skill's DB record:
-- `never` → return stdout directly
-- `always` → `codex exec` LLM synthesis
-- `optional` → skill-specific logic in `engine._should_synthesize()`
-
-**General fallback:** no skill matched → `codex exec` general reply.
+**General fallback:** if no workflow-specific node matches, `general-reply` produces a normal `codex exec` reply.
 
 **Combined process:** Discord bot + FastAPI web server share the same asyncio event loop via `asyncio.gather(client.start(), uvicorn_server.serve())`.
 
@@ -49,39 +44,35 @@ If a node matches: sends `"已啟用 skill: {id}"` to Discord, then executes.
 | File | Role |
 |------|------|
 | `src/bot/bot.py` | Discord event loop + asyncio.gather with web server |
-| `src/bot/engine.py` | `route_pass1()`, `execute_and_synthesize()` |
-| `src/bot/workflow_db.py` | SQLite schema/CRUD for skills, nodes, edges; seed data |
-| `src/bot/skills.py` | Execution helpers, reply formatters, direct-route functions |
+| `src/bot/engine.py` | workflow execution loop, routing, node lifecycle |
+| `src/bot/workflow_db.py` | SQLite schema/CRUD for nodes and edges; seed data |
+| `src/bot/nodes.py` | Execution helpers, reply formatters, direct-route functions |
 | `src/bot/scheduler.py` | In-process cron scheduler (polls every 30 s) |
 | `src/bot/schedule_db.py` | SQLite schema/CRUD for scheduled jobs |
 | `src/bot/prompts.py` | Loads prompt templates from `src/bot/prompt/` |
-| `src/web/app.py` | FastAPI: `create_app(db_path)` — REST API for workflow + skills |
+| `src/web/app.py` | FastAPI: `create_app(db_path)` — REST API for workflow graph |
 | `src/web/templates/index.html` | LiteGraph.js graph editor (English UI, Nord colours) |
 | `src/web/static/app.js` | Graph rendering, API integration, connection change sync |
 | `src/web/static/app.css` | Nord colour scheme |
-| `src/finance_report/runner.py` | Finance report pipeline entry point |
-| `skills/*/run.py` | Skill subprocesses (`--args-json` protocol) |
+| `nodes/finance-report/impl/runner.py` | Finance report pipeline entry point |
+| `nodes/*/run.py` | Node executors (`--args-json` protocol) |
 
 ### Workflow Graph DB Schema
 
 Tables in `db/workflow.sqlite3`:
 
 ```sql
-skills(id, display_name, description, router_mode, router_patterns,
-       script_path, system_prompt, pass2_mode, enabled)
 workflow_nodes(id, pass_index, skill_id, enabled)
 workflow_edges(id, from_node_id, to_node_id, condition_type, condition_value)
 ```
 
-Node ID convention: `p{pass_index}:{skill_id}` (e.g. `p1:echo`).
-No SKILL.md files — all skill metadata lives in the DB, editable via web UI.
+Legacy rows may still use `skill_id`, but the current model is node-first. No SKILL.md files are required; node metadata lives in the DB and prompt paths point to repo markdown files.
 
-### Skill Contract
+### Node Contract
 
-To add a skill:
-1. Create `skills/<name>/run.py` — accepts `--args-json '{"key":"val"}'`, writes to stdout, exits 0
-2. Insert skill row via web UI (`/api/skills`) or add to `_SEED_SKILLS` in `workflow_db.py`
-3. Add node via web UI or `_SEED_NODES`
+To add a node:
+1. Create `nodes/<name>/run.py` — accepts `--args-json '{"key":"val"}'`, writes to stdout, exits 0
+2. Add the node via web UI or `_SEED_NODES`
 4. For direct routing: add named-group regex to `router_patterns` (e.g. `(?P<text>.+)`) or register a built-in function in `engine._try_direct_route()`
 
 ### Finance Report Pipeline
@@ -107,7 +98,7 @@ Finance sources in `config/finance_sources.toml` (see `config/finance_sources.ex
 
 | Path | Contents |
 |------|----------|
-| `db/workflow.sqlite3` | Skills + workflow graph (created on first run) |
+| `db/workflow.sqlite3` | Workflow graph state (created on first run) |
 | `db/bot_scheduler.sqlite3` | Scheduled job state |
 | `.local/finance/` | Downloads, transcripts, codex output, logs |
 | `.local/bot/logs/` | Bot runtime logs |

@@ -25,7 +25,7 @@ Discord mention
 
 Important rules:
 
-- Workflow control is `node + edge`, not `skill + pass2_mode`.
+- Workflow control is `node + edge`, not legacy skill-centric routing flags.
 - Route candidates come only from the current route node's outgoing edges.
 - `start_node` is unique. Saving a node with `start_node=true` clears the previous one.
 - Hook files are optional. The web UI scans for sibling `pre_hook.py` / `run.py` / `post_hook.py` and shows lifecycle badges.
@@ -35,11 +35,12 @@ Important rules:
 
 - `src/bot/engine.py` — node execution loop and route-by-edge behavior
 - `src/bot/workflow_db.py` — SQLite schema, migration, node CRUD, hook scanning
-- `src/bot/skills.py` — shared helpers for direct-route parsing and Codex replies
+- `src/bot/nodes.py` — shared helpers for direct-route parsing and node execution
 - `src/bot/bot.py` — Discord event handler + FastAPI web server
 - `src/web/app.py` — REST API for node and edge management
 - `src/web/static/app.js` — LiteGraph DAG editor
-- `skills/*/run.py` — node executors
+- `nodes/*/run.py` — node executors
+- `nodes/finance-report/impl/` — RSS download, STT, digest pipeline
 
 ## Current built-in nodes
 

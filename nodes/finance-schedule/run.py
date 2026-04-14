@@ -1,4 +1,4 @@
-"""Run finance schedule management actions as a skill action."""
+"""Run finance schedule management actions as a node executor."""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.bot.skills import execute_schedule_action
+from src.bot.nodes import execute_schedule_action
 
 
 def main() -> int:

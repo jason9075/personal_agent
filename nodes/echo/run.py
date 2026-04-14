@@ -1,8 +1,8 @@
-"""Echo skill — outputs the extracted text back to stdout.
+"""Echo node executor — outputs the extracted text back to stdout.
 
-Triggered by: '啟用echo skill <text>'
-Pass 1 router extracts the text via named-group regex: (?P<text>.+)
-Pass 2 mode: never (stdout is returned directly as the bot reply)
+Triggered by: '啟用echo node <text>'
+Direct router extracts the text via named-group regex: (?P<text>.+)
+Stdout is returned directly as the bot reply.
 """
 from __future__ import annotations
 

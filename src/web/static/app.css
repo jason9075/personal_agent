@@ -576,21 +576,6 @@ select { cursor: pointer; }
 .toggle input:checked + .slider { background: var(--nord14); }
 .toggle input:checked + .slider::before { transform: translateX(16px); }
 
-/* ── Skills list ── */
-#skills-list { display: flex; flex-direction: column; gap: 5px; }
-.skill-card {
-  padding: 9px 11px;
-  background: var(--nord2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-  transition: border-color .12s, background .12s;
-}
-.skill-card:hover { border-color: var(--nord9); background: var(--nord1); }
-.skill-card.disabled { opacity: .4; }
-.skill-card-name { font-size: 13px; font-weight: 600; color: var(--nord6); }
-.skill-card-meta { font-size: 11px; color: var(--nord4); margin-top: 3px; }
-
 /* ── Modal ── */
 .modal {
   position: fixed; inset: 0;

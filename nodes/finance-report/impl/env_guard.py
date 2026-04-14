@@ -21,7 +21,7 @@ def assert_clean_pythonpath() -> None:
             "Detected incompatible PYTHONPATH entries for this interpreter.\n"
             f"Current Python: {sys.version.split()[0]}\n"
             "Unset PYTHONPATH before running, for example:\n"
-            "  env -u PYTHONPATH python -m src.finance_report.runner\n"
+            "  env -u PYTHONPATH python -m finance_report.runner\n"
             "First mismatched entries:\n"
             f"{joined}"
         )

@@ -191,10 +191,7 @@ def _select_episode(
     )]
     logger.info("Episode title keywords for fallback matching: %s", title_keywords)
 
-    dated_matches = [
-        episode for episode in episodes
-        if episode.episode_date == target_date
-    ]
+    dated_matches = [episode for episode in episodes if episode.episode_date == target_date]
     if dated_matches:
         logger.info("Found %s date-based match(es)", len(dated_matches))
         return EpisodeSelection(
