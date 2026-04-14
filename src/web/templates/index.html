@@ -24,6 +24,10 @@
       <span class="nav-icon">⏰</span>
       <span class="nav-label">Cron</span>
     </button>
+    <button class="nav-item" data-page="debug">
+      <span class="nav-icon">🐛</span>
+      <span class="nav-label">Debug</span>
+    </button>
   </nav>
 
   <div id="pages">
@@ -151,6 +155,16 @@
             <tbody id="cron-table-body"></tbody>
           </table>
           <div id="cron-empty" class="cron-empty hidden">No scheduled jobs yet. Click <strong>+ Job</strong> to create one.</div>
+        </div>
+      </div>
+    </div>
+    <!-- Debug Page -->
+    <div id="page-debug" class="page hidden">
+      <div id="debug-chat">
+        <div id="debug-messages"></div>
+        <div id="debug-input-bar">
+          <textarea id="debug-input" rows="1" placeholder="Send a message to the bot workflow…" spellcheck="false"></textarea>
+          <button id="debug-send" class="btn btn-primary">Send</button>
         </div>
       </div>
     </div>

@@ -949,7 +949,7 @@ document.getElementById('engine-prompt-modal').addEventListener('click', event =
 
 // ── Nav ──────────────────────────────────────────────────────────────────────
 
-const PAGES = ['dag', 'cron'];
+const PAGES = ['dag', 'cron', 'debug'];
 
 function switchPage(pageId) {
   PAGES.forEach(id => {
@@ -1127,3 +1127,70 @@ document.getElementById('cron-modal').addEventListener('click', event => {
     toast(`Load failed: ${err.message}`, 'err');
   }
 })();
+
+// ── Debug Chat ─────────────────────────────────────────────────────────────────
+
+let debugBusy = false;
+
+function appendDebugMsg(role, text, extra = '') {
+  const feed = document.getElementById('debug-messages');
+  const wrap = document.createElement('div');
+  wrap.className = `debug-msg ${role}${extra ? ' ' + extra : ''}`;
+
+  const label = document.createElement('div');
+  label.className = 'debug-msg-label';
+  label.textContent = role === 'user' ? 'You' : 'Bot';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'debug-msg-bubble';
+  bubble.textContent = text;
+
+  wrap.appendChild(label);
+  wrap.appendChild(bubble);
+  feed.appendChild(wrap);
+  feed.scrollTop = feed.scrollHeight;
+  return wrap;
+}
+
+async function sendDebugMessage() {
+  if (debugBusy) return;
+  const input = document.getElementById('debug-input');
+  const message = input.value.trim();
+  if (!message) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  appendDebugMsg('user', message);
+
+  const thinkingEl = appendDebugMsg('bot', 'Thinking…', 'thinking');
+  debugBusy = true;
+  document.getElementById('debug-send').disabled = true;
+
+  try {
+    const data = await POST('/api/debug/chat', { message });
+    thinkingEl.remove();
+    appendDebugMsg('bot', data.reply);
+  } catch (err) {
+    thinkingEl.remove();
+    appendDebugMsg('bot', `Error: ${err.message}`, 'thinking');
+  } finally {
+    debugBusy = false;
+    document.getElementById('debug-send').disabled = false;
+    input.focus();
+  }
+}
+
+document.getElementById('debug-send').addEventListener('click', sendDebugMessage);
+
+document.getElementById('debug-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendDebugMessage();
+  }
+});
+
+// auto-grow textarea
+document.getElementById('debug-input').addEventListener('input', function () {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 140) + 'px';
+});

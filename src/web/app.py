@@ -4,10 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from ..bot.engine import execute_workflow
 from ..bot.prompts import build_runtime_context, compose_prompt, load_engine_system_prompt, load_prompt_path
 from ..bot.schedule_db import (
     ScheduledJob,
@@ -31,6 +35,7 @@ from ..bot.workflow_db import (
 )
 
 _THIS_DIR = Path(__file__).resolve().parent
+_DEBUG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="debug_chat")
 _TEMPLATES_DIR = _THIS_DIR / "templates"
 _STATIC_DIR = _THIS_DIR / "static"
 _REPO_ROOT = _THIS_DIR.parents[1]
@@ -205,6 +210,21 @@ def create_app(workflow_db_path: Path, schedule_db_path: Path) -> FastAPI:
             "path": "src/bot/engine_system_prompt.md",
             "content": _safe_engine_prompt(),
         })
+
+    @app.post("/api/debug/chat")
+    async def debug_chat_endpoint(body: dict[str, Any]) -> JSONResponse:
+        message = str(body.get("message", "")).strip()
+        if not message:
+            raise HTTPException(status_code=422, detail="message is required")
+        loop = asyncio.get_event_loop()
+        try:
+            reply = await loop.run_in_executor(
+                _DEBUG_EXECUTOR,
+                lambda: execute_workflow(message, workflow_db_path, _REPO_ROOT),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        return JSONResponse({"reply": reply})
 
     @app.post("/api/node-details-preview")
     async def node_details_preview_endpoint(body: dict[str, Any]) -> JSONResponse:
