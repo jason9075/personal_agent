@@ -148,11 +148,26 @@ _SEED_NODES: list[WorkflowNode] = [
         use_prev_output=True,
         timeout_seconds=30,
     ),
+    WorkflowNode(
+        id="node-creator",
+        name="Node Creator",
+        description="Create or update workflow nodes via natural language. LLM generates run.py and registers the node.",
+        model_name="gpt-5.4",
+        start_node=False,
+        enabled=True,
+        executor_path="nodes/node-creator/run.py",
+        pre_hook_path=None,
+        post_hook_path="nodes/node-creator/post_hook.py",
+        node_prompt_path="nodes/node-creator/system.md",
+        use_prev_output=False,
+        timeout_seconds=300,
+    ),
 ]
 
 _SEED_EDGES: list[tuple[str, str]] = [
     ("intent-router", "finance"),
     ("intent-router", "echo"),
+    ("intent-router", "node-creator"),
     ("finance", "finance-report"),
     ("finance", "finance-schedule"),
 ]
@@ -171,7 +186,29 @@ def ensure_workflow_db(db_path: Path) -> None:
             """
         )
         _seed_nodes_and_edges(conn)
+        _migrate_ensure_node_creator(conn)
         conn.commit()
+
+
+def _migrate_ensure_node_creator(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: ensure node-creator node and its edge exist."""
+    node_creator = next((n for n in _SEED_NODES if n.id == "node-creator"), None)
+    if node_creator is None:
+        return
+    exists = conn.execute(
+        "SELECT 1 FROM workflow_nodes WHERE id = ?", (node_creator.id,)
+    ).fetchone()
+    if not exists:
+        _upsert_node_conn(conn, node_creator)
+    edge_exists = conn.execute(
+        "SELECT 1 FROM workflow_edges WHERE from_node_id = ? AND to_node_id = ?",
+        ("intent-router", "node-creator"),
+    ).fetchone()
+    if not edge_exists:
+        conn.execute(
+            "INSERT INTO workflow_edges (from_node_id, to_node_id) VALUES (?, ?)",
+            ("intent-router", "node-creator"),
+        )
 
 
 def _seed_nodes_and_edges(conn: sqlite3.Connection) -> None:
