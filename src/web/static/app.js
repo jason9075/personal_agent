@@ -967,6 +967,12 @@ document.getElementById('modal-cancel').addEventListener('click', () => {
   document.getElementById('modal').classList.add('hidden');
 });
 
+document.getElementById('modal').addEventListener('click', event => {
+  if (event.target === event.currentTarget) {
+    document.getElementById('modal').classList.add('hidden');
+  }
+});
+
 document.getElementById('btn-add-node').addEventListener('click', openModal);
 
 document.getElementById('btn-save-all').addEventListener('click', async () => {
@@ -1034,6 +1040,12 @@ document.getElementById('details-close').addEventListener('click', () => {
 
 document.getElementById('details-close-top').addEventListener('click', () => {
   document.getElementById('details-modal').classList.add('hidden');
+});
+
+document.getElementById('details-modal').addEventListener('click', event => {
+  if (event.target === event.currentTarget) {
+    document.getElementById('details-modal').classList.add('hidden');
+  }
 });
 
 (async () => {
