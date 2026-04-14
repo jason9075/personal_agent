@@ -1,7 +1,8 @@
 """Shared node execution helpers."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 
 from .schedule_db import create_job, delete_job, ensure_db, list_jobs, update_job
 from .scheduler import parse_cron
@@ -15,6 +16,40 @@ class NodeActionResult:
     stdout: str
     stderr: str
     returncode: int
+
+
+@dataclass(frozen=True)
+class NodeLlmEnvelope:
+    run_output: str
+    response_mode: str
+    task_prompt: str = ""
+    default_args: dict = field(default_factory=dict)
+    output_path: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+def parse_llm_envelope(action_result: NodeActionResult) -> NodeLlmEnvelope | None:
+    if action_result.returncode != 0:
+        return None
+    raw = action_result.stdout.strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict) or parsed.get("kind") != "llm_request":
+        return None
+    default_args = parsed.get("default_args", {})
+    metadata = parsed.get("metadata", {})
+    return NodeLlmEnvelope(
+        run_output=str(parsed.get("run_output", "")).strip(),
+        response_mode=str(parsed.get("response_mode", "text")).strip() or "text",
+        task_prompt=str(parsed.get("task_prompt", "")).strip(),
+        default_args=default_args if isinstance(default_args, dict) else {},
+        output_path=str(parsed.get("output_path", "")).strip(),
+        metadata={str(k): str(v) for k, v in metadata.items()} if isinstance(metadata, dict) else {},
+    )
 
 
 def format_direct_node_reply(action_result: NodeActionResult) -> str:

@@ -6,8 +6,9 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .llm import LlmRequest, parse_json_response, run_codex_request
 from .logging_utils import get_logger
-from .nodes import NodeActionResult, format_direct_node_reply
+from .nodes import NodeActionResult, format_direct_node_reply, parse_llm_envelope
 from .workflow_db import WorkflowGraph, WorkflowNode, load_workflow_graph
 
 
@@ -115,8 +116,48 @@ def _execute_node(
         payload["next_nodes"] = candidate_targets
 
     action_result = _execute_executor(node, payload, prev_output, repo_root)
+    envelope = parse_llm_envelope(action_result)
     output_text = format_direct_node_reply(action_result)
-    decision = _maybe_parse_node_decision(action_result)
+    decision = None
+
+    if envelope is not None:
+        try:
+            llm_response = _execute_node_llm(
+                node,
+                envelope,
+                user_msg,
+                prev_output,
+                candidate_targets,
+                repo_root,
+                recent_context=recent_context,
+            )
+        except Exception:
+            fallback_reply = envelope.metadata.get("fallback_reply", "目前無法完成判斷，請稍後再試。")
+            if envelope.response_mode == "decision":
+                decision = NodeDecision(decision="reply", reply=fallback_reply)
+                output_text = fallback_reply
+            else:
+                raise
+        else:
+            if envelope.output_path:
+                output_path = repo_root / envelope.output_path
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(llm_response.rstrip() + "\n", encoding="utf-8")
+            codex_output_path = envelope.metadata.get("codex_output_path", "").strip()
+            if codex_output_path:
+                output_path = repo_root / codex_output_path
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(llm_response.rstrip() + "\n", encoding="utf-8")
+            output_text = llm_response.strip()
+            if envelope.response_mode == "decision":
+                fallback_reply = envelope.metadata.get("fallback_reply", "目前無法完成判斷，請稍後再試。")
+                parsed = parse_json_response(llm_response, fallback_reply)
+                decision = _decision_from_parsed(parsed, envelope.default_args)
+                if decision and decision.decision == "reply":
+                    output_text = decision.reply
+    else:
+        decision = _maybe_parse_node_decision(action_result)
+
     if decision and decision.decision == "reply":
         output_text = decision.reply
 
@@ -145,6 +186,31 @@ def _execute_node(
     )
 
 
+def _execute_node_llm(
+    node: WorkflowNode,
+    envelope,
+    user_msg: str,
+    prev_output: str,
+    candidate_targets: list[dict],
+    repo_root: Path,
+    *,
+    recent_context: str = "",
+) -> str:
+    request = LlmRequest(
+        node_id=node.id,
+        model_name=node.model_name or "gpt-5.4",
+        node_prompt_path=node.node_prompt_path,
+        previous_input=prev_output if node.use_prev_output else "",
+        run_output=envelope.run_output,
+        next_nodes=candidate_targets,
+        recent_context=recent_context,
+        user_message=user_msg,
+        task_prompt=envelope.task_prompt,
+        metadata=envelope.metadata,
+    )
+    return run_codex_request(request, repo_root).strip()
+
+
 def _maybe_parse_node_decision(action_result: NodeActionResult) -> NodeDecision | None:
     if action_result.returncode != 0:
         return None
@@ -158,6 +224,10 @@ def _maybe_parse_node_decision(action_result: NodeActionResult) -> NodeDecision 
     if not isinstance(parsed, dict):
         return None
 
+    return _decision_from_parsed(parsed, {})
+
+
+def _decision_from_parsed(parsed: dict, default_args: dict) -> NodeDecision | None:
     decision = str(parsed.get("decision", "")).strip()
     if decision == "reply":
         return NodeDecision(
@@ -166,10 +236,14 @@ def _maybe_parse_node_decision(action_result: NodeActionResult) -> NodeDecision 
         )
     if decision == "use_next_node":
         args = parsed.get("args", {})
+        if not isinstance(args, dict):
+            args = {}
+        merged_args = dict(default_args)
+        merged_args.update(args)
         return NodeDecision(
             decision="use_next_node",
             next_node_id=str(parsed.get("next_node_id", "")).strip(),
-            args=args if isinstance(args, dict) else {},
+            args=merged_args,
         )
     return None
 

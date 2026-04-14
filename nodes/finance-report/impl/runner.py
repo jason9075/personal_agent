@@ -9,7 +9,9 @@ from threading import Semaphore
 
 from dotenv import load_dotenv
 
-from .analyze import analyze_transcript
+from src.bot.llm import LlmRequest, run_codex_request
+
+from .analyze import build_analysis_run_output, build_analysis_task_prompt, save_markdown_outputs
 from .cli import parse_cli_args
 from .config import FinanceConfig, list_available_sources, load_configs
 from .env_guard import assert_clean_pythonpath
@@ -20,6 +22,10 @@ from .transcribe import transcribe_video
 
 WHISPER_CONCURRENCY = 1
 CODEX_CONCURRENCY = 4
+
+
+class FinanceReportPrepared(dict):
+    """Prepared context for an engine-owned finance digest LLM call."""
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -98,44 +104,42 @@ def _process_source(
     logger.info("Log file: %s", log_path)
 
     try:
-        selection = resolve_episode(config, requested_target_date)
-        note_path = config.note_path_for(selection.target_date)
-        transcript_path = config.transcript_path_for(selection.target_date)
-        codex_output_path = config.codex_output_path_for(selection.target_date)
-
-        if note_path.exists():
-            logger.info("Note already exists; sending without reprocessing: %s", note_path)
-            markdown = note_path.read_text(encoding="utf-8").strip()
-            message = _format_discord_message(config.source.title, selection.target_date.isoformat(), markdown)
+        prepared = prepare_finance_report(
+            config=config,
+            requested_target_date=requested_target_date,
+            whisper_slots=whisper_slots,
+        )
+        existing_message = prepared.get("existing_message", "").strip()
+        if existing_message:
             if notify_channel_id:
-                send_markdown_message(bot_token, notify_channel_id, message)
-            return message
+                send_markdown_message(bot_token, notify_channel_id, existing_message)
+            return existing_message
 
-        logger.info("Starting media download stage")
-        result = download_episode_media(config, selection)
-        logger.info("Download stage completed: %s", result.media_path)
-        logger.info("Waiting for Whisper slot")
-        with whisper_slots:
-            logger.info("Starting transcription stage with model %s", config.whisper_model)
-            transcribe_video(result.media_path, transcript_path, config.whisper_model)
-        logger.info("Transcription completed: %s", transcript_path)
         logger.info("Waiting for Codex slot")
         with codex_slots:
             logger.info("Starting analysis stage")
-            markdown = analyze_transcript(
-                transcript_path=transcript_path,
-                note_path=note_path,
-                codex_output_path=codex_output_path,
-                target_date=selection.target_date,
-                codex_model=config.codex_model,
-                repo_root=repo_root,
-                source_title=config.source.title,
-                source_author=config.source.author,
-                source_id=config.source.source_id,
-                node_prompt_path=node_prompt_path,
+            markdown = run_codex_request(
+                LlmRequest(
+                    node_id="finance-report",
+                    model_name=config.codex_model or "gpt-5.4",
+                    node_prompt_path=node_prompt_path or "nodes/finance-report/system.md",
+                    run_output=str(prepared["run_output"]),
+                    user_message=f"請整理 {config.source.title} 在 {prepared['target_date']} 的財經節目內容。",
+                    task_prompt=str(prepared["task_prompt"]),
+                    metadata={
+                        "source_id": config.source.source_id,
+                        "target_date": str(prepared["target_date"]),
+                    },
+                ),
+                repo_root,
+            ).strip()
+            save_markdown_outputs(
+                markdown,
+                note_path=Path(str(prepared["note_path"])),
+                codex_output_path=Path(str(prepared["codex_output_path"])),
             )
-        logger.info("Analysis completed: %s", note_path)
-        message = _format_discord_message(config.source.title, selection.target_date.isoformat(), markdown)
+        logger.info("Analysis completed: %s", prepared["note_path"])
+        message = _format_discord_message(config.source.title, str(prepared["target_date"]), markdown)
         if notify_channel_id:
             logger.info("Sending Discord notification")
             send_markdown_message(bot_token, notify_channel_id, message)
@@ -155,6 +159,58 @@ def _process_source(
                 f"【{config.source.title}】每日財經報告失敗：{type(exc).__name__}。請查看本地 log 後重試。",
             )
         raise RuntimeError(f"{config.source.source_id}: {type(exc).__name__}") from exc
+
+
+def prepare_finance_report(
+    *,
+    config: FinanceConfig,
+    requested_target_date,
+    whisper_slots: Semaphore,
+) -> FinanceReportPrepared:
+    logger = get_logger()
+    selection = resolve_episode(config, requested_target_date)
+    note_path = config.note_path_for(selection.target_date)
+    transcript_path = config.transcript_path_for(selection.target_date)
+    codex_output_path = config.codex_output_path_for(selection.target_date)
+
+    if note_path.exists():
+        logger.info("Note already exists; returning cached note: %s", note_path)
+        markdown = note_path.read_text(encoding="utf-8").strip()
+        return FinanceReportPrepared(
+            existing_message=_format_discord_message(config.source.title, selection.target_date.isoformat(), markdown),
+        )
+
+    logger.info("Starting media download stage")
+    result = download_episode_media(config, selection)
+    logger.info("Download stage completed: %s", result.media_path)
+    logger.info("Waiting for Whisper slot")
+    with whisper_slots:
+        logger.info("Starting transcription stage with model %s", config.whisper_model)
+        transcribe_video(result.media_path, transcript_path, config.whisper_model)
+    logger.info("Transcription completed: %s", transcript_path)
+    return FinanceReportPrepared(
+        source_id=config.source.source_id,
+        source_title=config.source.title,
+        source_author=config.source.author or "未提供",
+        target_date=selection.target_date.isoformat(),
+        transcript_path=str(transcript_path),
+        note_path=str(note_path),
+        codex_output_path=str(codex_output_path),
+        run_output=build_analysis_run_output(
+            transcript_path=transcript_path,
+            note_path=note_path,
+            source_title=config.source.title,
+            source_author=config.source.author,
+            target_date=selection.target_date,
+        ),
+        task_prompt=build_analysis_task_prompt(
+            transcript_path=transcript_path,
+            note_path=note_path,
+            target_date=selection.target_date,
+            source_title=config.source.title,
+            source_author=config.source.author,
+        ),
+    )
 
 
 def _format_discord_message(source_title: str, target_date: str, markdown: str) -> str:

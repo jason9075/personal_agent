@@ -3,11 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
-import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 
@@ -26,9 +22,6 @@ def main() -> int:
     explicit_target_date = str(payload.get("target_date", "")).strip()
     explicit_list_sources = bool(payload.get("list_sources", False))
     workers = int(payload.get("workers", 4) or 4)
-    next_nodes = payload.get("next_nodes", [])
-    node_prompt_path = str(payload.get("node_prompt_path", "")).strip()
-    previous_input = str(payload.get("prev_output", "")).strip()
 
     sources = list_available_sources()
     note_index = _build_note_index(node_dir.parent / "finance-report" / "notes", sources)
@@ -52,8 +45,14 @@ def main() -> int:
     else:
         selected_source = match_source_from_text(message, sources)
 
-    engine_prompt = _read_text("src/bot/engine_system_prompt.md", node_dir)
-    node_prompt = _read_text(node_prompt_path, node_dir)
+    default_args: dict[str, object] = {}
+    if selected_source:
+        default_args["source"] = selected_source.source_id
+    if explicit_target_date:
+        default_args["target_date"] = explicit_target_date
+    if workers:
+        default_args["workers"] = workers
+
     run_output = json.dumps(
         {
             "explicit_hints": {
@@ -76,56 +75,24 @@ def main() -> int:
         ensure_ascii=False,
         indent=2,
     )
-    runtime_context = _build_runtime_context(
-        previous_input=previous_input,
-        run_output=run_output,
-        next_nodes_json=json.dumps(next_nodes, ensure_ascii=False, indent=2),
-        user_message=message or "(empty)",
+    fallback_reply = _format_selector_summary(note_index, selected_source)
+    print(
+        json.dumps(
+            {
+                "kind": "llm_request",
+                "response_mode": "decision",
+                "run_output": run_output,
+                "default_args": default_args,
+                "metadata": {
+                    "node_kind": "finance",
+                    "fallback_reply": fallback_reply,
+                    "selected_source": selected_source.source_id if selected_source else "",
+                    "target_date": explicit_target_date,
+                },
+            },
+            ensure_ascii=False,
+        )
     )
-    prompt = _compose_prompt(engine_prompt, node_prompt, runtime_context)
-
-    repo_root = node_dir.parents[1]
-    model_name = str(payload.get("model_name", "")).strip() or os.getenv("FINANCE_SELECTOR_MODEL", "").strip() or os.getenv("FINANCE_CODEX_MODEL", "").strip() or "gpt-5.4"
-    cmd = [
-        "codex",
-        "-m",
-        model_name,
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "workspace-write",
-        "-C",
-        str(repo_root),
-    ]
-
-    completed = subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        cwd=repo_root,
-        check=False,
-    )
-    if completed.returncode != 0:
-        print(json.dumps({"decision": "reply", "reply": _format_selector_summary(note_index, selected_source)}, ensure_ascii=False))
-        return 0
-
-    parsed = _parse_json_response(completed.stdout)
-    if parsed.get("decision") == "use_next_node":
-        args = parsed.get("args", {})
-        if not isinstance(args, dict):
-            args = {}
-        if selected_source and "source" not in args:
-            args["source"] = selected_source.source_id
-        if explicit_target_date and "target_date" not in args:
-            args["target_date"] = explicit_target_date
-        if workers and "workers" not in args:
-            args["workers"] = workers
-        parsed["args"] = args
-    elif parsed.get("decision") == "reply" and not str(parsed.get("reply", "")).strip():
-        parsed["reply"] = _format_selector_summary(note_index, selected_source)
-
-    print(json.dumps(parsed, ensure_ascii=False, separators=(",", ":")))
     return 0
 
 
@@ -148,55 +115,6 @@ def _parse_payload() -> dict:
         "workers": args.workers,
         "list_sources": args.list_sources,
     }
-
-
-def _read_text(path_str: str, node_dir: Path) -> str:
-    if not path_str:
-        return ""
-    raw = Path(path_str)
-    path = raw if raw.is_absolute() else node_dir.parents[1] / raw
-    return path.read_text(encoding="utf-8")
-
-
-def _parse_json_response(raw: str) -> dict:
-    text = raw.strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.DOTALL).strip()
-    if not text:
-        return {"decision": "reply", "reply": "目前沒有可處理的 finance 內容。"}
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return {"decision": "reply", "reply": "目前無法完成 finance 判斷，請稍後再試。"}
-    if not isinstance(parsed, dict):
-        return {"decision": "reply", "reply": "目前無法完成 finance 判斷，請稍後再試。"}
-    return parsed
-
-
-def _compose_prompt(*sections: str) -> str:
-    return "\n\n".join(section.strip() for section in sections if section and section.strip())
-
-
-def _build_runtime_context(
-    *,
-    previous_input: str,
-    run_output: str,
-    next_nodes_json: str,
-    user_message: str,
-) -> str:
-    sections = []
-    if previous_input:
-        sections.extend(["PREVIOUS_INPUT:", previous_input, ""])
-    sections.extend([
-        "RUN_OUTPUT:",
-        run_output,
-        "",
-        "Reachable next nodes:",
-        next_nodes_json,
-        "",
-        "User message:",
-        user_message,
-    ])
-    return "\n".join(sections)
 
 
 def _format_source_list(sources: list) -> str:
@@ -230,6 +148,8 @@ def _build_note_index(notes_dir: Path, sources: list) -> list[dict]:
 
 
 def _extract_note_date(filename: str) -> str:
+    import re
+
     match = re.search(r"note_(\d{4}-\d{2}-\d{2})\.md$", filename)
     return match.group(1) if match else ""
 
@@ -251,27 +171,20 @@ def _format_selector_summary(note_index: list[dict], selected_source) -> str:
     if not available:
         return "目前還沒有現成的 finance 筆記。如果要我開始分析，請指定來源或直接要求生成最新報告。"
 
-    latest_row = max(
-        available,
-        key=lambda row: (
-            _parse_date_or_min(row["latest_date"]),
-            row["source_id"],
-        ),
-    )
+    latest_row = max(available, key=lambda row: (_parse_date_or_min(row["latest_date"]), row["source_id"]))
     return (
-        f"目前手上已有 {len(available)} 個來源的 finance 筆記，"
-        f"最新一篇來自 `{latest_row['title']}`，日期是 {latest_row['latest_date']}。"
-        "如果你要我繼續分析新的節目，可以直接指定來源或日期。"
+        f"目前可直接查看的最新筆記來自 `{latest_row['title']}`，日期是 {latest_row['latest_date']}，"
+        f"累積共 {latest_row['count']} 篇。若你要我重新跑新的集數，請指定來源或日期。"
     )
 
 
-def _parse_date_or_min(value: str) -> datetime:
-    if not value:
-        return datetime.min
+def _parse_date_or_min(value: str):
+    from datetime import date
+
     try:
-        return datetime.strptime(value, "%Y-%m-%d")
+        return date.fromisoformat(value)
     except ValueError:
-        return datetime.min
+        return date.min
 
 
 if __name__ == "__main__":
