@@ -975,6 +975,7 @@ document.getElementById('nav-toggle').addEventListener('click', () => {
 // ── Cron Jobs ─────────────────────────────────────────────────────────────────
 
 let cronEditingId = null;
+let cronRunBusy = false;
 
 async function loadCronJobs() {
   try {
@@ -1014,6 +1015,7 @@ function renderCronTable(jobs) {
       <td><span class="${statusClass}">${escapeHtml(job.last_status || '—')}</span></td>
       <td>
         <div class="btn-row" style="margin:0;gap:4px">
+          <button class="btn btn-primary btn-sm" onclick="runCronJobNow(${job.id})">Run now</button>
           <button class="btn btn-secondary btn-sm" onclick="openCronModal(${job.id})">Edit</button>
           <button class="btn btn-danger btn-sm" onclick="deleteCronJob(${job.id})">Delete</button>
         </div>
@@ -1063,6 +1065,23 @@ async function deleteCronJob(jobId) {
     toast('Job deleted');
   } catch (err) {
     toast(err.message, 'err');
+  }
+}
+
+async function runCronJobNow(jobId) {
+  if (cronRunBusy) {
+    toast('Another cron job is running', 'err');
+    return;
+  }
+  cronRunBusy = true;
+  try {
+    await POST(`/api/schedule/jobs/${jobId}/run`, {});
+    await loadCronJobs();
+    toast('Job finished');
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally {
+    cronRunBusy = false;
   }
 }
 
@@ -1169,7 +1188,13 @@ async function sendDebugMessage() {
   try {
     const data = await POST('/api/debug/chat', { message });
     thinkingEl.remove();
-    appendDebugMsg('bot', data.reply);
+    const wrap = appendDebugMsg('bot', data.reply);
+    if (data.node_trace && data.node_trace.length) {
+      const trace = document.createElement('div');
+      trace.className = 'debug-node-trace';
+      trace.textContent = data.node_trace.join(' → ');
+      wrap.insertBefore(trace, wrap.querySelector('.debug-msg-bubble'));
+    }
   } catch (err) {
     thinkingEl.remove();
     appendDebugMsg('bot', `Error: ${err.message}`, 'thinking');

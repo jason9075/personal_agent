@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..bot.engine import execute_workflow
 from ..bot.prompts import build_runtime_context, compose_prompt, load_engine_system_prompt, load_prompt_path
+from ..bot.scheduler import FinanceScheduler
 from ..bot.schedule_db import (
     ScheduledJob,
     create_job,
@@ -41,7 +42,11 @@ _STATIC_DIR = _THIS_DIR / "static"
 _REPO_ROOT = _THIS_DIR.parents[1]
 
 
-def create_app(workflow_db_path: Path, schedule_db_path: Path) -> FastAPI:
+def create_app(
+    workflow_db_path: Path,
+    schedule_db_path: Path,
+    scheduler: FinanceScheduler | None = None,
+) -> FastAPI:
     app = FastAPI(title="personal_agent workflow", docs_url="/docs")
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
@@ -196,6 +201,21 @@ def create_app(workflow_db_path: Path, schedule_db_path: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc))
         return JSONResponse({"status": "ok"})
 
+    @app.post("/api/schedule/jobs/{job_id}/run")
+    async def run_job_endpoint(job_id: int) -> JSONResponse:
+        if scheduler is None:
+            raise HTTPException(status_code=503, detail="scheduler is not available")
+        try:
+            await scheduler.run_job_now(job_id)
+            job = get_job(schedule_db_path, job_id)
+        except RuntimeError as exc:
+            detail = str(exc)
+            status_code = 409 if "already running" in detail else 404
+            raise HTTPException(status_code=status_code, detail=detail)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        return JSONResponse(_job_to_dict(job))
+
     @app.post("/api/prompt-preview")
     async def prompt_preview_endpoint(body: dict[str, Any]) -> JSONResponse:
         path_str = _nullable_str(body.get("path"))
@@ -217,14 +237,15 @@ def create_app(workflow_db_path: Path, schedule_db_path: Path) -> FastAPI:
         if not message:
             raise HTTPException(status_code=422, detail="message is required")
         loop = asyncio.get_event_loop()
+        node_trace: list[str] = []
         try:
             reply = await loop.run_in_executor(
                 _DEBUG_EXECUTOR,
-                lambda: execute_workflow(message, workflow_db_path, _REPO_ROOT),
+                lambda: execute_workflow(message, workflow_db_path, _REPO_ROOT, node_trace=node_trace),
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
-        return JSONResponse({"reply": reply})
+        return JSONResponse({"reply": reply, "node_trace": node_trace})
 
     @app.post("/api/node-details-preview")
     async def node_details_preview_endpoint(body: dict[str, Any]) -> JSONResponse:

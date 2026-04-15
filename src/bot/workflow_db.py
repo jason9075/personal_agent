@@ -95,7 +95,7 @@ _SEED_NODES: list[WorkflowNode] = [
     WorkflowNode(
         id="finance",
         name="Finance",
-        description="Finance domain node. Handles finance questions directly or delegates to finance subflows.",
+        description="Handles finance questions, finance report generation, and finance schedule management such as recurring checks, cron jobs, and manual report runs.",
         model_name="gpt-5.4",
         start_node=False,
         enabled=True,
@@ -188,6 +188,7 @@ def ensure_workflow_db(db_path: Path) -> None:
         _seed_nodes_and_edges(conn)
         _migrate_ensure_node_creator(conn)
         _migrate_clear_unused_model_names(conn)
+        _migrate_update_finance_description(conn)
         conn.commit()
 
 
@@ -222,6 +223,17 @@ def _migrate_clear_unused_model_names(conn: sqlite3.Connection) -> None:
             "UPDATE workflow_nodes SET model_name = '' WHERE id = ? AND model_name != ''",
             (node_id,),
         )
+
+
+def _migrate_update_finance_description(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: align finance node description with current routing intent."""
+    finance = next((n for n in _SEED_NODES if n.id == "finance"), None)
+    if finance is None:
+        return
+    conn.execute(
+        "UPDATE workflow_nodes SET description = ? WHERE id = ? AND description != ?",
+        (finance.description, finance.id, finance.description),
+    )
 
 
 def _seed_nodes_and_edges(conn: sqlite3.Connection) -> None:

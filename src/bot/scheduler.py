@@ -6,11 +6,12 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import discord
 
 from .logging_utils import get_logger
-from .schedule_db import ScheduledJob, delete_job, list_jobs, set_job_run_result
+from .schedule_db import ScheduledJob, delete_job, get_job, list_jobs, set_job_run_result
 
 
 SCHEDULER_POLL_SECONDS = 30
@@ -32,6 +33,7 @@ class FinanceScheduler:
         self.client = client
         self._task: asyncio.Task | None = None
         self._last_minute_key = ""
+        self._running_job_ids: set[int] = set()
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -58,16 +60,44 @@ class FinanceScheduler:
                 continue
             if not cron_matches(job.cron_expr, now):
                 continue
-            await self._run_job(job, now)
+            await self._run_job(job, now, trigger="schedule")
 
-    async def _run_job(self, job: ScheduledJob, now: datetime) -> None:
+    async def run_job_now(self, job_id: int) -> None:
+        job = get_job(self.db_path, job_id)
+        await self._run_job(job, datetime.now(), trigger="manual")
+
+    async def _run_job(
+        self,
+        job: ScheduledJob,
+        now: datetime,
+        *,
+        trigger: Literal["manual", "schedule"],
+    ) -> None:
         logger = get_logger()
-        logger.info("Scheduler running job_id=%s name=%s", job.id, job.name)
+        if job.id in self._running_job_ids:
+            raise RuntimeError(f"schedule job {job.id} is already running")
+
+        self._running_job_ids.add(job.id)
+        logger.info("Scheduler running job_id=%s name=%s trigger=%s", job.id, job.name, trigger)
+        try:
+            await self._execute_job(job, now, trigger=trigger)
+        finally:
+            self._running_job_ids.discard(job.id)
+
+    async def _execute_job(
+        self,
+        job: ScheduledJob,
+        now: datetime,
+        *,
+        trigger: Literal["manual", "schedule"],
+    ) -> None:
+        logger = get_logger()
 
         if job.channel_id:
             channel = self.client.get_channel(int(job.channel_id))
             if channel is not None:
-                await channel.send(f"排程 `{job.name}` 開始執行，處理中…")
+                trigger_text = "手動觸發" if trigger == "manual" else "排程"
+                await channel.send(f"{trigger_text} `{job.name}` 開始執行，處理中…")
 
         cmd = ["python", "nodes/finance-report/run.py", "--workers", str(job.workers)]
         if job.source_id:
@@ -87,8 +117,9 @@ class FinanceScheduler:
         else:
             output = completed.stderr.strip() or completed.stdout.strip() or "(no output)"
         logger.info(
-            "Scheduler job completed job_id=%s status=%s returncode=%s output_len=%s",
+            "Scheduler job completed job_id=%s trigger=%s status=%s returncode=%s output_len=%s",
             job.id,
+            trigger,
             status,
             completed.returncode,
             len(output),
@@ -113,7 +144,8 @@ class FinanceScheduler:
         if status == "ok":
             await _send_to_channel(channel, output)
         else:
-            prefix = f"排程 `{job.name}` 執行失敗"
+            trigger_text = "手動觸發" if trigger == "manual" else "排程"
+            prefix = f"{trigger_text} `{job.name}` 執行失敗"
             await channel.send(f"{prefix}：\n```text\n{output[:1800]}\n```")
 
 

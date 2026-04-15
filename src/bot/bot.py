@@ -91,7 +91,7 @@ async def _run(token: str) -> None:
     """Run Discord bot and FastAPI web server in the same asyncio event loop."""
     from ..web.app import create_app
 
-    web_app = create_app(WORKFLOW_DB_PATH, SCHEDULE_DB_PATH)
+    web_app = create_app(WORKFLOW_DB_PATH, SCHEDULE_DB_PATH, scheduler=scheduler)
     uvicorn_config = uvicorn.Config(
         web_app,
         host="0.0.0.0",
