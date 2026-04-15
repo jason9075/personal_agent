@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.bot.workflow_db import load_workflow_graph
+from src.bot.workflow_db import load_workflow_graph  # noqa: E402
 
 _PENDING_SPEC_PATH = "nodes/node-creator/.pending_spec.json"
 
