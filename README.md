@@ -30,7 +30,7 @@ Important rules:
 - `start_node` is unique. Saving a node with `start_node=true` clears the previous one.
 - Each node has its own `model_name`. The default is `gpt-5.4`, and the web UI colors nodes by model rather than pass index.
 - Hook files are optional. The web UI scans for sibling `pre_hook.py` / `run.py` / `post_hook.py` and shows lifecycle badges.
-- Prompt text is stored in repo `.md` files. The DB stores prompt file paths such as `nodes/intent-router/system.md`, and the engine loads them at runtime.
+- Prompt text is stored in repo `.md` files. The DB stores prompt file paths such as `nodes/intent-router/node.md`, and the engine loads them at runtime.
 
 ## Node stdout protocol
 

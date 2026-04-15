@@ -83,6 +83,37 @@ print(json.dumps({
     "metadata": {},
 }, ensure_ascii=False))
 ```
+
+### Pre/Post Hook（選用）
+
+每個 node 可在 `run.py` 前後各有一個 hook 腳本：
+
+- `pre_hook.py` — 在 `run.py` **之前**執行，可做準備工作（下載資料、暖機等）
+  - 接收與 `run.py` 相同的 `--args-json` payload
+  - stdout 不影響 workflow，僅用於副作用
+- `post_hook.py` — 在 `run.py` 和 LLM 推論**之後**執行，可做後處理或傳送通知
+  - payload 包含：`input`（原始 args）、`prev_output`、`stdout`（run.py stdout）、`stderr`、`returncode`
+  - 若 post_hook.py 有 stdout 輸出，引擎會以此作為最終回覆取代 run.py 的輸出
+
+Hook 骨架（與 run.py 相同協議）：
+```python
+from __future__ import annotations
+import json, sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+def main() -> int:
+    idx = sys.argv.index("--args-json")
+    payload: dict = json.loads(sys.argv[idx + 1])
+    # ... 你的邏輯 ...
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
 """
 
 _TASK_PROMPT = """\
@@ -97,6 +128,8 @@ _TASK_PROMPT = """\
   "name": "節點顯示名稱（英文或中文）",
   "description": "節點功能說明（30字以內，供路由 LLM 判斷）",
   "run_py_content": "完整 Python run.py 程式碼字串",
+  "pre_hook_py_content": "",
+  "post_hook_py_content": "",
   "system_md_content": "",
   "model_name": "gpt-5.4",
   "timeout_seconds": 120,
@@ -106,8 +139,10 @@ _TASK_PROMPT = """\
 
 規則：
 - run_py_content 必須是完整、可執行的 Python 程式碼（使用 \\n 換行）
+- pre_hook_py_content：若需要在 run.py 前執行的準備邏輯，填入完整 pre_hook.py 程式碼；否則留空字串
+- post_hook_py_content：若需要在 LLM 推論後執行後處理（如傳送通知、寫入檔案），填入完整 post_hook.py 程式碼；否則留空字串
 - 若 node 使用 kind="infer"，在 system_md_content 提供 LLM system prompt
-- 若 node 不使用 LLM，system_md_content 留空字串
+- 若 node 不使用 LLM，model_name 設為 null，system_md_content 留空字串
 - add_edge_from_intent_router=true 才能從主路由觸發此節點
 - 若是更新現有節點，node_id 必須與現有節點 id 完全一致
 - 只輸出 JSON，不輸出任何其他內容
@@ -133,6 +168,8 @@ def main() -> int:
             "name": n.name,
             "description": n.description,
             "executor_path": n.executor_path,
+            "pre_hook_path": n.pre_hook_path or "",
+            "post_hook_path": n.post_hook_path or "",
             "enabled": n.enabled,
             "timeout_seconds": n.timeout_seconds,
         }
@@ -141,10 +178,18 @@ def main() -> int:
 
     update_target_id = _detect_update_target(message, graph)
     existing_run_py = ""
+    existing_pre_hook_py = ""
+    existing_post_hook_py = ""
     if update_target_id:
         run_py_path = REPO_ROOT / f"nodes/{update_target_id}/run.py"
         if run_py_path.exists():
             existing_run_py = run_py_path.read_text(encoding="utf-8")
+        pre_hook_path = REPO_ROOT / f"nodes/{update_target_id}/pre_hook.py"
+        if pre_hook_path.exists():
+            existing_pre_hook_py = pre_hook_path.read_text(encoding="utf-8")
+        post_hook_path = REPO_ROOT / f"nodes/{update_target_id}/post_hook.py"
+        if post_hook_path.exists():
+            existing_post_hook_py = post_hook_path.read_text(encoding="utf-8")
 
     run_output = json.dumps(
         {
@@ -153,6 +198,8 @@ def main() -> int:
             "action": "update" if update_target_id else "create",
             "update_target_id": update_target_id or "",
             "existing_run_py": existing_run_py,
+            "existing_pre_hook_py": existing_pre_hook_py,
+            "existing_post_hook_py": existing_post_hook_py,
             "existing_nodes": existing_nodes,
             "node_protocol": _NODE_PROTOCOL_DOC,
         },

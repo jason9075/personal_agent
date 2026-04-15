@@ -68,10 +68,13 @@ def main() -> int:
 
     name = str(spec.get("name", node_id)).strip() or node_id
     description = str(spec.get("description", "")).strip()
-    model_name = str(spec.get("model_name", "gpt-5.4")).strip() or "gpt-5.4"
+    raw_model = spec.get("model_name")
+    model_name: str | None = str(raw_model).strip() if raw_model else None
     timeout_seconds = int(spec.get("timeout_seconds", 120))
     use_prev_output = bool(spec.get("use_prev_output", True))
     system_md_content = str(spec.get("system_md_content", "")).strip()
+    pre_hook_py_content = str(spec.get("pre_hook_py_content", "")).strip()
+    post_hook_py_content = str(spec.get("post_hook_py_content", "")).strip()
     add_edge = bool(spec.get("add_edge_from_intent_router", True))
 
     db_path = REPO_ROOT / "db" / "workflow.sqlite3"
@@ -86,13 +89,23 @@ def main() -> int:
 
     node_prompt_path: str | None = None
     if system_md_content:
-        system_md_path = node_dir / "system.md"
+        system_md_path = node_dir / "node.md"
         system_md_path.write_text(system_md_content, encoding="utf-8")
-        node_prompt_path = f"nodes/{node_id}/system.md"
+        node_prompt_path = f"nodes/{node_id}/node.md"
+
+    pre_hook_path: str | None = None
+    if pre_hook_py_content:
+        (node_dir / "pre_hook.py").write_text(pre_hook_py_content, encoding="utf-8")
+        pre_hook_path = f"nodes/{node_id}/pre_hook.py"
+
+    post_hook_path: str | None = None
+    if post_hook_py_content:
+        (node_dir / "post_hook.py").write_text(post_hook_py_content, encoding="utf-8")
+        post_hook_path = f"nodes/{node_id}/post_hook.py"
 
     executor_path = f"nodes/{node_id}/run.py"
 
-    # Upsert node in DB (preserves start_node=False, enabled=True for new nodes)
+    # Upsert node in DB (preserves start_node / enabled for existing nodes)
     existing = get_node(db_path, node_id)
     new_node = WorkflowNode(
         id=node_id,
@@ -102,8 +115,8 @@ def main() -> int:
         start_node=existing.start_node if existing else False,
         enabled=existing.enabled if existing else True,
         executor_path=executor_path,
-        pre_hook_path=existing.pre_hook_path if existing else None,
-        post_hook_path=existing.post_hook_path if existing else None,
+        pre_hook_path=pre_hook_path if pre_hook_py_content else (existing.pre_hook_path if existing else None),
+        post_hook_path=post_hook_path if post_hook_py_content else (existing.post_hook_path if existing else None),
         node_prompt_path=node_prompt_path,
         use_prev_output=use_prev_output,
         timeout_seconds=timeout_seconds,
@@ -124,6 +137,10 @@ def main() -> int:
     if description:
         lines.append(f"- 描述：{description}")
     lines.append(f"- 執行器：`{executor_path}`")
+    if pre_hook_path:
+        lines.append(f"- Pre hook：`{pre_hook_path}`")
+    if post_hook_path:
+        lines.append(f"- Post hook：`{post_hook_path}`")
     lines.append(f"- Timeout：{timeout_seconds}s")
     if node_prompt_path:
         lines.append(f"- System prompt：`{node_prompt_path}`")

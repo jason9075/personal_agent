@@ -1,7 +1,6 @@
 """Finance decision node executor."""
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
@@ -9,8 +8,13 @@ from pathlib import Path
 
 
 def main() -> int:
-    payload = _parse_payload()
-    via_args_json = "--args-json" in sys.argv
+    if "--args-json" not in sys.argv:
+        print("usage: run.py --args-json '{...}'", file=sys.stderr)
+        return 1
+
+    idx = sys.argv.index("--args-json")
+    payload: dict = json.loads(sys.argv[idx + 1])
+
     node_dir = Path(__file__).resolve().parent
     report_node_dir = node_dir.parent / "finance-report"
     if str(report_node_dir) not in sys.path:
@@ -21,28 +25,20 @@ def main() -> int:
     message = str(payload.get("message", "")).strip()
     explicit_source = str(payload.get("source", "")).strip()
     explicit_target_date = str(payload.get("target_date", "")).strip()
-    explicit_list_sources = bool(payload.get("list_sources", False))
     workers = int(payload.get("workers", 4) or 4)
     channel_id = os.getenv("FINANCE_REPORT_CHANNEL_ID", "").strip() or str(payload.get("channel_id", "")).strip()
-
-    sources = list_available_sources()
-    note_index = _build_note_index(node_dir.parent / "finance-report" / "notes", sources)
-
-    if explicit_list_sources:
-        if via_args_json:
-            print(json.dumps({"decision": "reply", "reply": _format_source_list(sources)}, ensure_ascii=False))
-        else:
-            print(_format_source_list(sources))
-        return 0
 
     if workers <= 0:
         raise SystemExit("workers must be a positive integer")
 
+    sources = list_available_sources()
+    note_index = _build_note_index(node_dir.parent / "finance-report" / "notes", sources)
+
     selected_source = None
     if explicit_source:
-        selected_source = next((source for source in sources if source.source_id == explicit_source), None)
+        selected_source = next((s for s in sources if s.source_id == explicit_source), None)
         if selected_source is None:
-            known = ", ".join(source.source_id for source in sources) if sources else "(none)"
+            known = ", ".join(s.source_id for s in sources) if sources else "(none)"
             raise SystemExit(f"unknown finance source id {explicit_source!r}; available: {known}")
     else:
         selected_source = match_source_from_text(message, sources)
@@ -68,12 +64,12 @@ def main() -> int:
             },
             "available_rss_sources": [
                 {
-                    "id": source.source_id,
-                    "title": source.title,
-                    "author": source.author,
-                    "aliases": list(source.aliases),
+                    "id": s.source_id,
+                    "title": s.title,
+                    "author": s.author,
+                    "aliases": list(s.aliases),
                 }
-                for source in sources
+                for s in sources
             ],
             "existing_note_inventory": note_index,
         },
@@ -99,38 +95,6 @@ def main() -> int:
         )
     )
     return 0
-
-
-def _parse_payload() -> dict:
-    if "--args-json" in sys.argv:
-        idx = sys.argv.index("--args-json")
-        return json.loads(sys.argv[idx + 1])
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--source", default="")
-    parser.add_argument("--target-date", default="")
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--list-sources", action="store_true")
-    parser.add_argument("message", nargs="?", default="")
-    args = parser.parse_args()
-    return {
-        "message": args.message,
-        "source": args.source,
-        "target_date": args.target_date,
-        "workers": args.workers,
-        "list_sources": args.list_sources,
-    }
-
-
-def _format_source_list(sources: list) -> str:
-    if not sources:
-        return "目前沒有可用的財經 RSS 來源。"
-
-    lines = ["可用財經來源："]
-    for source in sources:
-        author = f"｜作者：{source.author}" if source.author else ""
-        lines.append(f"- {source.source_id}｜{source.title}{author}")
-    return "\n".join(lines)
 
 
 def _build_note_index(notes_dir: Path, sources: list) -> list[dict]:

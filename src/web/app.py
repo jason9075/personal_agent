@@ -390,11 +390,7 @@ def json_dumps_pretty(value: Any) -> str:
 
 
 def _node_uses_llm(node: WorkflowNode) -> bool:
-    return (node.executor_path or "").strip() in {
-        "nodes/intent-router/run.py",
-        "nodes/finance/run.py",
-        "nodes/finance-report/run.py",
-    }
+    return bool(node.model_name)
 
 
 def _safe_finance_report_task_prompt() -> str:
