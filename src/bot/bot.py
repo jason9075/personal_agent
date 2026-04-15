@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 repo_root = Path(__file__).resolve().parents[2]
+_IMAGE_ATTACHMENT_DIR = repo_root / ".local" / "discord-images"
+_IMAGE_EXTENSIONS = {".apng", ".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 scheduler = FinanceScheduler(SCHEDULE_DB_PATH, repo_root, client)
 logger = get_logger()
 
@@ -67,16 +70,18 @@ async def on_message(message: discord.Message) -> None:
         content = content.replace(mention, "")
     content = content.strip()
     referenced_message = await _resolve_referenced_message(message)
-    workflow_message = _build_workflow_message(content, referenced_message)
+    image_paths = await _collect_image_paths(message, referenced_message)
+    workflow_message = _build_workflow_message(content, referenced_message, image_paths)
     logger.info(
-        "Received mentioned message user_id=%s channel_id=%s has_reference=%s content=%r",
+        "Received mentioned message user_id=%s channel_id=%s has_reference=%s image_count=%s content=%r",
         message.author.id,
         message.channel.id,
         referenced_message is not None,
+        len(image_paths),
         workflow_message[:500],
     )
 
-    if not workflow_message:
+    if not workflow_message and not image_paths:
         logger.info("Ignored empty mention-only message channel_id=%s", message.channel.id)
         return
 
@@ -88,6 +93,7 @@ async def on_message(message: discord.Message) -> None:
             repo_root,
             recent_context="",
             channel_id=str(message.channel.id),
+            image_paths=image_paths,
         )
     except Exception as exc:
         logger.exception("Workflow execution failed")
@@ -125,22 +131,84 @@ async def _resolve_referenced_message(message: discord.Message) -> discord.Messa
         return None
 
 
-def _build_workflow_message(user_content: str, referenced_message: discord.Message | None) -> str:
+async def _collect_image_paths(
+    message: discord.Message,
+    referenced_message: discord.Message | None,
+) -> list[str]:
+    paths: list[str] = []
+    for source_message in (referenced_message, message):
+        if source_message is None:
+            continue
+        for attachment in source_message.attachments:
+            if not _is_image_attachment(attachment):
+                continue
+            saved_path = await _save_image_attachment(source_message, attachment)
+            if saved_path is not None:
+                paths.append(str(saved_path))
+    return paths
+
+
+def _is_image_attachment(attachment: discord.Attachment) -> bool:
+    content_type = attachment.content_type or ""
+    if content_type.lower().startswith("image/"):
+        return True
+    return Path(attachment.filename).suffix.lower() in _IMAGE_EXTENSIONS
+
+
+async def _save_image_attachment(
+    message: discord.Message,
+    attachment: discord.Attachment,
+) -> Path | None:
+    try:
+        _IMAGE_ATTACHMENT_DIR.mkdir(parents=True, exist_ok=True)
+        filename = _safe_filename(attachment.filename)
+        target_path = _IMAGE_ATTACHMENT_DIR / f"{message.id}-{attachment.id}-{filename}"
+        await attachment.save(target_path, seek_begin=False, use_cached=True)
+    except (discord.DiscordException, OSError):
+        logger.exception(
+            "Failed to save Discord image attachment message_id=%s attachment_id=%s",
+            message.id,
+            attachment.id,
+        )
+        return None
+    return target_path
+
+
+def _safe_filename(filename: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
+    return safe_name or "image"
+
+
+def _build_workflow_message(
+    user_content: str,
+    referenced_message: discord.Message | None,
+    image_paths: list[str],
+) -> str:
+    image_text = _format_image_paths(image_paths)
     if referenced_message is None:
-        return user_content
+        return "\n\n".join(part for part in (user_content, image_text) if part)
 
     reference_text = _format_referenced_message(referenced_message)
     if user_content:
-        return (
+        return "\n\n".join(part for part in (
             "使用者在 Discord 回覆一則訊息並 tag 你。\n\n"
             f"使用者補充：\n{user_content}\n\n"
-            f"被回覆的訊息：\n{reference_text}"
-        )
-    return (
+            f"被回覆的訊息：\n{reference_text}",
+            image_text,
+        ) if part)
+    return "\n\n".join(part for part in (
         "使用者在 Discord 回覆一則訊息並 tag 你。"
         "請根據被回覆的訊息內容接著回覆。\n\n"
-        f"被回覆的訊息：\n{reference_text}"
-    )
+        f"被回覆的訊息：\n{reference_text}",
+        image_text,
+    ) if part)
+
+
+def _format_image_paths(image_paths: list[str]) -> str:
+    if not image_paths:
+        return ""
+    formatted_paths = "\n".join(f"- {path}" for path in image_paths)
+    return f"附加圖片已提供給 LLM，路徑如下：\n{formatted_paths}"
 
 
 def _format_referenced_message(message: discord.Message) -> str:

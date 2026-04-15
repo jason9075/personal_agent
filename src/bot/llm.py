@@ -24,6 +24,7 @@ class LlmRequest:
     recent_context: str = ""
     user_message: str = ""
     task_prompt: str = ""
+    image_paths: list[str] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
 
 
@@ -54,6 +55,8 @@ def run_codex_request(request: LlmRequest, repo_root: Path) -> str:
         "-C",
         str(repo_root),
     ]
+    for image_path in _existing_image_paths(request.image_paths):
+        cmd.extend(["--image", str(image_path)])
     completed = subprocess.run(
         cmd,
         input=prompt,
@@ -121,6 +124,7 @@ def _log_request(
     metadata = dict(request.metadata)
     metadata["node_prompt_path"] = request.node_prompt_path or ""
     metadata["has_task_prompt"] = "1" if request.task_prompt else "0"
+    metadata["image_count"] = str(len(_existing_image_paths(request.image_paths)))
     log_llm_call(
         db_path=_LLM_LOG_DB_PATH,
         node_id=request.node_id,
@@ -131,3 +135,12 @@ def _log_request(
         error_message=error_message,
         metadata_json=json.dumps(metadata, ensure_ascii=False, sort_keys=True),
     )
+
+
+def _existing_image_paths(image_paths: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    for image_path in image_paths:
+        path = Path(image_path)
+        if path.exists() and path.is_file():
+            paths.append(path)
+    return paths

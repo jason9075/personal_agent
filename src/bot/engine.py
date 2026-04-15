@@ -35,6 +35,7 @@ def execute_workflow(
     *,
     recent_context: str = "",
     channel_id: str = "",
+    image_paths: list[str] | None = None,
     node_trace: list[str] | None = None,
 ) -> str:
     """Execute the configured workflow starting from the single start node.
@@ -49,7 +50,8 @@ def execute_workflow(
     if current is None:
         raise RuntimeError("workflow has no enabled start_node")
 
-    current_input: dict = {"message": user_msg, "channel_id": channel_id}
+    workflow_image_paths = list(image_paths or [])
+    current_input: dict = {"message": user_msg, "channel_id": channel_id, "image_paths": workflow_image_paths}
     prev_output = ""
 
     while current:
@@ -64,6 +66,7 @@ def execute_workflow(
             prev_output,
             repo_root,
             recent_context=recent_context,
+            image_paths=workflow_image_paths,
         )
 
         if result.decision is not None:
@@ -79,7 +82,12 @@ def execute_workflow(
                 raise RuntimeError(f"node '{current.id}' selected unreachable next node '{next_node.id}'")
 
             prev_output = result.output_text
-            current_input = {"message": user_msg, "channel_id": channel_id, **result.decision.args}
+            current_input = {
+                "message": user_msg,
+                "channel_id": channel_id,
+                **result.decision.args,
+                "image_paths": workflow_image_paths,
+            }
             current = next_node
             continue
 
@@ -88,7 +96,12 @@ def execute_workflow(
             logger.info("Node %s has no matching successor; returning direct output", current.id)
             return result.output_text
         prev_output = result.output_text
-        current_input = {"message": user_msg, "prev_output": prev_output, "channel_id": channel_id}
+        current_input = {
+            "message": user_msg,
+            "prev_output": prev_output,
+            "channel_id": channel_id,
+            "image_paths": workflow_image_paths,
+        }
         reply_metadata = _direct_reply_metadata(result.action_result)
         if reply_metadata:
             current_input["metadata"] = reply_metadata
@@ -106,6 +119,7 @@ def _execute_node(
     repo_root: Path,
     *,
     recent_context: str = "",
+    image_paths: list[str] | None = None,
 ) -> NodeExecutionResult:
     if node.pre_hook_path:
         _run_hook(node.id, "pre_hook", node.pre_hook_path, node_input, repo_root)
@@ -140,6 +154,7 @@ def _execute_node(
                 candidate_targets,
                 repo_root,
                 recent_context=recent_context,
+                image_paths=image_paths or [],
             )
         except Exception:
             fallback_reply = envelope.metadata.get("fallback_reply", "目前無法完成判斷，請稍後再試，並檢查是否登入。")
@@ -206,6 +221,7 @@ def _execute_node_llm(
     repo_root: Path,
     *,
     recent_context: str = "",
+    image_paths: list[str] | None = None,
 ) -> str:
     request = LlmRequest(
         node_id=node.id,
@@ -217,6 +233,7 @@ def _execute_node_llm(
         recent_context=recent_context,
         user_message=user_msg,
         task_prompt=envelope.task_prompt,
+        image_paths=list(image_paths or []),
         metadata=envelope.metadata,
     )
     return run_codex_request(request, repo_root).strip()
