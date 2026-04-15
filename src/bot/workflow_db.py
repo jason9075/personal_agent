@@ -218,6 +218,20 @@ _SEED_NODES: list[WorkflowNode] = [
         use_prev_output=True,
         timeout_seconds=300,
     ),
+    WorkflowNode(
+        id="image-analysis",
+        name="Image Analysis",
+        description="Analyze Discord image attachments according to the user's request, such as reading text, describing content, extracting key points, comparing images, or answering image-related questions.",
+        model_name="gpt-5.4",
+        start_node=False,
+        enabled=True,
+        executor_path="nodes/image-analysis/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        node_prompt_path="nodes/image-analysis/node.md",
+        use_prev_output=False,
+        timeout_seconds=300,
+    ),
 ]
 
 _SEED_EDGES: list[tuple[str, str]] = [
@@ -226,6 +240,7 @@ _SEED_EDGES: list[tuple[str, str]] = [
     ("intent-router", "node-creator"),
     ("intent-router", "webfetch"),
     ("intent-router", "yt-fetch"),
+    ("intent-router", "image-analysis"),
     ("finance", "finance-report"),
     ("finance", "finance-schedule"),
     ("webfetch", "webfetch-summary"),
@@ -248,6 +263,7 @@ def ensure_workflow_db(db_path: Path) -> None:
         _seed_nodes_and_edges(conn)
         _migrate_ensure_node_creator(conn)
         _migrate_ensure_media_nodes(conn)
+        _migrate_ensure_image_analysis_node(conn)
         _migrate_clear_unused_model_names(conn)
         _migrate_update_finance_description(conn)
         conn.commit()
@@ -302,6 +318,28 @@ def _migrate_ensure_media_nodes(conn: sqlite3.Connection) -> None:
                 "INSERT INTO workflow_edges (from_node_id, to_node_id) VALUES (?, ?)",
                 (from_id, to_id),
             )
+
+
+def _migrate_ensure_image_analysis_node(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: ensure image analysis node and router edge exist."""
+    image_node = next((n for n in _SEED_NODES if n.id == "image-analysis"), None)
+    if image_node is None:
+        return
+    exists = conn.execute(
+        "SELECT 1 FROM workflow_nodes WHERE id = ?", (image_node.id,)
+    ).fetchone()
+    if not exists:
+        _upsert_node_conn(conn, image_node)
+
+    edge_exists = conn.execute(
+        "SELECT 1 FROM workflow_edges WHERE from_node_id = ? AND to_node_id = ?",
+        ("intent-router", image_node.id),
+    ).fetchone()
+    if not edge_exists:
+        conn.execute(
+            "INSERT INTO workflow_edges (from_node_id, to_node_id) VALUES (?, ?)",
+            ("intent-router", image_node.id),
+        )
 
 
 _NO_LLM_NODE_IDS = {"echo", "finance-schedule", "webfetch", "yt-fetch"}

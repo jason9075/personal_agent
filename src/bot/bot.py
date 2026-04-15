@@ -27,6 +27,7 @@ client = discord.Client(intents=intents)
 repo_root = Path(__file__).resolve().parents[2]
 _IMAGE_ATTACHMENT_DIR = repo_root / ".local" / "discord-images"
 _IMAGE_EXTENSIONS = {".apng", ".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+_MAX_IMAGE_ATTACHMENTS = 5
 scheduler = FinanceScheduler(SCHEDULE_DB_PATH, repo_root, client)
 logger = get_logger()
 
@@ -140,6 +141,8 @@ async def _collect_image_paths(
         if source_message is None:
             continue
         for attachment in source_message.attachments:
+            if len(paths) >= _MAX_IMAGE_ATTACHMENTS:
+                return paths
             if not _is_image_attachment(attachment):
                 continue
             saved_path = await _save_image_attachment(source_message, attachment)

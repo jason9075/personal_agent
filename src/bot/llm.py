@@ -11,6 +11,7 @@ from .llm_log_db import log_llm_call
 from .prompts import build_runtime_context, compose_prompt, load_engine_system_prompt, load_prompt_path
 
 _LLM_LOG_DB_PATH = Path(__file__).resolve().parents[2] / "db" / "llm_calls.sqlite3"
+_MAX_IMAGE_PATHS = 5
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,8 @@ def _log_request(
 def _existing_image_paths(image_paths: list[str]) -> list[Path]:
     paths: list[Path] = []
     for image_path in image_paths:
+        if len(paths) >= _MAX_IMAGE_PATHS:
+            break
         path = Path(image_path)
         if path.exists() and path.is_file():
             paths.append(path)
