@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Semaphore
 from typing import Literal
 
 import discord
 
+from .llm import LlmRequest, run_codex_request, unwrap_decision_reply
 from .logging_utils import get_logger
 from .schedule_db import ScheduledJob, delete_job, get_job, list_jobs, set_job_run_result
 
@@ -99,29 +100,17 @@ class FinanceScheduler:
                 trigger_text = "手動觸發" if trigger == "manual" else "排程"
                 await channel.send(f"{trigger_text} `{job.name}` 開始執行，處理中…")
 
-        cmd = ["python", "nodes/finance-report/run.py", "--workers", str(job.workers)]
-        if job.source_id:
-            cmd.extend(["--source", job.source_id])
-
-        completed = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=self.repo_root,
-            check=False,
-        )
-        status = "ok" if completed.returncode == 0 else "error"
-        if status == "ok":
-            output = completed.stdout.strip() or "(no output)"
-        else:
-            output = completed.stderr.strip() or completed.stdout.strip() or "(no output)"
+        try:
+            output = await asyncio.to_thread(self._run_finance_report_job, job)
+            status = "ok"
+        except Exception as exc:
+            status = "error"
+            output = str(exc).strip() or f"{type(exc).__name__}"
         logger.info(
-            "Scheduler job completed job_id=%s trigger=%s status=%s returncode=%s output_len=%s",
+            "Scheduler job completed job_id=%s trigger=%s status=%s output_len=%s",
             job.id,
             trigger,
             status,
-            completed.returncode,
             len(output),
         )
         set_job_run_result(
@@ -147,6 +136,66 @@ class FinanceScheduler:
             trigger_text = "手動觸發" if trigger == "manual" else "排程"
             prefix = f"{trigger_text} `{job.name}` 執行失敗"
             await channel.send(f"{prefix}：\n```text\n{output[:1800]}\n```")
+
+    def _run_finance_report_job(self, job: ScheduledJob) -> str:
+        report_node_dir = self.repo_root / "nodes" / "finance-report"
+        if str(report_node_dir) not in __import__("sys").path:
+            __import__("sys").path.insert(0, str(report_node_dir))
+
+        from impl.analyze import save_markdown_outputs
+        from impl.config import load_configs
+        from impl.runner import WHISPER_CONCURRENCY, prepare_finance_report
+
+        outputs: list[str] = []
+        errors: list[str] = []
+
+        for config in load_configs(job.source_id):
+            try:
+                config.ensure_directories()
+                prepared = prepare_finance_report(
+                    config=config,
+                    requested_target_date=None,
+                    whisper_slots=Semaphore(WHISPER_CONCURRENCY),
+                )
+                existing_message = str(prepared.get("existing_message", "")).strip()
+                if existing_message:
+                    outputs.append(existing_message)
+                    continue
+
+                request = LlmRequest(
+                    node_id="finance-report",
+                    model_name=config.codex_model or "gpt-5.4",
+                    node_prompt_path="nodes/finance-report/node.md",
+                    run_output=str(prepared["run_output"]),
+                    task_prompt=str(prepared["task_prompt"]),
+                    metadata={
+                        "source_id": str(prepared["source_id"]),
+                        "target_date": str(prepared["target_date"]),
+                    },
+                )
+                markdown = unwrap_decision_reply(run_codex_request(request, self.repo_root)).strip()
+                save_markdown_outputs(
+                    markdown,
+                    note_path=Path(str(prepared["note_path"])),
+                    codex_output_path=Path(str(prepared["codex_output_path"])),
+                )
+                outputs.append(
+                    _format_finance_report_message(
+                        str(prepared["source_title"]),
+                        str(prepared["target_date"]),
+                        markdown,
+                    )
+                )
+            except Exception as exc:
+                source_label = config.source.source_id
+                errors.append(f"[{source_label}] {type(exc).__name__}: {exc}")
+
+        if errors:
+            details = "\n".join(errors)
+            if outputs:
+                details = "\n".join(outputs + ["", "Errors:", details])
+            raise RuntimeError(details)
+        return "\n\n".join(output.strip() for output in outputs if output.strip()) or "(no output)"
 
 
 def cron_matches(expr: str, current: datetime) -> bool:
@@ -220,3 +269,11 @@ async def _send_to_channel(channel, content: str, limit: int = 1900) -> None:
         text = text[split_at:].strip()
     if text:
         await channel.send(text)
+
+
+def _format_finance_report_message(source_title: str, target_date: str, markdown: str) -> str:
+    header = f"【{source_title}｜{target_date}】"
+    content = markdown.strip()
+    if content.startswith(header):
+        return content
+    return f"{header}\n\n{content}"
