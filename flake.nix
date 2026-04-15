@@ -53,6 +53,7 @@
             pkgs.entr
             pkgs.sqlite
             pkgs.ffmpeg
+            pkgs.yt-dlp
             pkgs.plantuml
             pkgs.visidata
             pkgs.tmux

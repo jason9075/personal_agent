@@ -161,4 +161,5 @@ if __name__ == "__main__":
 - `use_prev_output=true` 接力上下文；standalone 入口點設 false
 - `add_edge_from_intent_router=true` 頂層功能；子流程節點設 false
 - 若是更新現有節點，`node_id` 必須與現有節點 id 完全一致
+- **stdout 純淨原則**：engine 把 node 的整個 stdout 當 JSON 解析；任何第三方套件（whisper、tqdm 等）若在同一 process 內往 stdout 印東西，都會導致解析失敗。解法：用 `contextlib.redirect_stdout(io.StringIO())` 包住會污染 stdout 的呼叫
 - 只輸出 JSON，不輸出任何其他內容

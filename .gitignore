@@ -24,6 +24,7 @@ db/*.db-*
 .local/
 nodes/finance-report/notes/
 nodes/webfetch/profile/
+.local/yt/
 
 # Nix
 .direnv/
