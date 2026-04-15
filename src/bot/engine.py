@@ -35,8 +35,14 @@ def execute_workflow(
     *,
     recent_context: str = "",
     channel_id: str = "",
+    node_trace: list[str] | None = None,
 ) -> str:
-    """Execute the configured workflow starting from the single start node."""
+    """Execute the configured workflow starting from the single start node.
+
+    If *node_trace* is provided it will be populated with the IDs of every node
+    that ran, in execution order.  The caller can inspect it after the call to
+    show which nodes were involved (e.g. the debug UI).
+    """
     logger = get_logger()
     graph = load_workflow_graph(db_path)
     current = graph.start_node()
@@ -48,6 +54,8 @@ def execute_workflow(
 
     while current:
         logger.info("Executing node id=%s model=%s", current.id, current.model_name or "—")
+        if node_trace is not None:
+            node_trace.append(current.id)
         result = _execute_node(
             current,
             graph,

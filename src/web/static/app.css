@@ -943,6 +943,13 @@ select { cursor: pointer; }
   font-style: italic;
 }
 
+.debug-node-trace {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
 #debug-input-bar {
   display: flex;
   gap: 8px;
