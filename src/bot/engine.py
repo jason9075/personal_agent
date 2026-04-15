@@ -18,6 +18,7 @@ class NodeDecision:
     reply: str = ""
     next_node_id: str = ""
     args: dict = field(default_factory=dict)
+    target_channel_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ def execute_workflow(
     channel_id: str = "",
     image_paths: list[str] | None = None,
     node_trace: list[str] | None = None,
+    response_metadata: dict[str, str] | None = None,
 ) -> str:
     """Execute the configured workflow starting from the single start node.
 
@@ -73,6 +75,7 @@ def execute_workflow(
             if result.decision.decision == "reply":
                 reply = result.decision.reply.strip() or "目前沒有可回覆的內容。"
                 logger.info("Decision node %s replied directly output_len=%s", current.id, len(reply))
+                _set_response_metadata(response_metadata, target_channel_id=result.decision.target_channel_id)
                 return reply
 
             next_node = graph.node_by_id(result.decision.next_node_id)
@@ -94,7 +97,11 @@ def execute_workflow(
         next_node = _first_enabled_successor(graph, current.id)
         if next_node is None:
             logger.info("Node %s has no matching successor; returning direct output", current.id)
-            return result.output_text
+            reply, target_channel_id = _extract_delivery_response(result.output_text)
+            if not target_channel_id:
+                target_channel_id = _target_channel_from_action_result(result.action_result)
+            _set_response_metadata(response_metadata, target_channel_id=target_channel_id)
+            return reply
         prev_output = result.output_text
         current_input = {
             "message": user_msg,
@@ -276,9 +283,11 @@ def _direct_reply_metadata(action_result: NodeActionResult | None) -> dict[str, 
 def _decision_from_parsed(parsed: dict, default_args: dict) -> NodeDecision | None:
     decision = str(parsed.get("decision", "")).strip()
     if decision == "reply":
+        reply, target_channel_id = _extract_delivery_response(json.dumps(parsed, ensure_ascii=False))
         return NodeDecision(
             decision="reply",
-            reply=str(parsed.get("reply", "")).strip(),
+            reply=reply or str(parsed.get("reply", "")).strip(),
+            target_channel_id=target_channel_id,
         )
     if decision == "use_next_node":
         args = parsed.get("args", {})
@@ -292,6 +301,57 @@ def _decision_from_parsed(parsed: dict, default_args: dict) -> NodeDecision | No
             args=merged_args,
         )
     return None
+
+
+def _extract_delivery_response(raw: str) -> tuple[str, str]:
+    """Extract an optional Discord target channel from a final reply envelope."""
+    text = raw.strip()
+    if not text:
+        return "", ""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text, ""
+    if not isinstance(parsed, dict):
+        return text, ""
+
+    target_channel_id = _normalize_channel_id(
+        parsed.get("target_channel_id")
+        or parsed.get("channel_id")
+        or parsed.get("target_channel")
+        or parsed.get("send_channel_id")
+    )
+    is_reply_envelope = parsed.get("decision") == "reply" or bool(target_channel_id)
+    if not is_reply_envelope:
+        return text, ""
+
+    reply = str(parsed.get("reply") or parsed.get("message") or parsed.get("content") or "").strip()
+    return reply or text, target_channel_id
+
+
+def _target_channel_from_action_result(action_result: NodeActionResult | None) -> str:
+    metadata = _direct_reply_metadata(action_result)
+    return _normalize_channel_id(
+        metadata.get("target_channel_id")
+        or metadata.get("channel_id")
+        or metadata.get("target_channel")
+        or metadata.get("send_channel_id")
+    )
+
+
+def _normalize_channel_id(raw_value: object) -> str:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return ""
+    digits = "".join(ch for ch in raw_text if ch.isdigit())
+    return digits if digits else ""
+
+
+def _set_response_metadata(metadata: dict[str, str] | None, *, target_channel_id: str = "") -> None:
+    if metadata is None:
+        return
+    if target_channel_id:
+        metadata["target_channel_id"] = target_channel_id
 
 
 def _execute_executor(

@@ -129,12 +129,22 @@ if __name__ == "__main__":
 - `next_nodes`: 可達下一個節點清單 `[{"id":"...","name":"...","description":"..."}]`
 - `channel_id`: Discord channel id（若由 Discord 觸發）
 - `image_paths`: Discord 圖片附件下載後的本機路徑清單，最多 5 張；包含觸發訊息與被 reply 訊息中的圖片
+- 若最終回覆要發到其他 Discord channel，可在 final reply JSON 或 `kind=reply` 的 `metadata` 放 `target_channel_id`；預設不放時會回到觸發訊息的 channel。只能使用使用者明確提供的 channel mention/id，不要猜 channel id。
 
 ### 輸出格式
 
 **直接回覆 (tool node，不呼叫 LLM)：**
 ```python
 print(json.dumps({"kind": "reply", "reply": "回覆內容"}, ensure_ascii=False))
+```
+
+若 tool node 明確要把最終訊息送到另一個 Discord channel：
+```python
+print(json.dumps({
+    "kind": "reply",
+    "reply": "回覆內容",
+    "metadata": {"target_channel_id": "1234567890"},
+}, ensure_ascii=False))
 ```
 
 **要求 LLM 做決策 (router node)：**

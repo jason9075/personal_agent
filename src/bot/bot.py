@@ -87,6 +87,7 @@ async def on_message(message: discord.Message) -> None:
         return
 
     try:
+        response_metadata: dict[str, str] = {}
         response = await asyncio.to_thread(
             execute_workflow,
             workflow_message,
@@ -95,12 +96,72 @@ async def on_message(message: discord.Message) -> None:
             recent_context="",
             channel_id=str(message.channel.id),
             image_paths=image_paths,
+            response_metadata=response_metadata,
         )
     except Exception as exc:
         logger.exception("Workflow execution failed")
         response = f"工作流執行失敗：{type(exc).__name__}: {exc}"
-    logger.info("Sending workflow response channel_id=%s response_len=%s", message.channel.id, len(response))
-    await message.reply(response, mention_author=False)
+        response_metadata = {}
+    await _send_workflow_response(message, response, response_metadata)
+
+
+async def _send_workflow_response(
+    source_message: discord.Message,
+    response: str,
+    response_metadata: dict[str, str],
+) -> None:
+    response = response.strip() or "目前沒有可回覆的內容。"
+    source_channel_id = str(source_message.channel.id)
+    target_channel_id = str(response_metadata.get("target_channel_id", "")).strip()
+    if not target_channel_id or target_channel_id == source_channel_id:
+        logger.info(
+            "Sending workflow response channel_id=%s response_len=%s",
+            source_message.channel.id,
+            len(response),
+        )
+        await source_message.reply(response, mention_author=False)
+        return
+
+    target_channel = await _resolve_sendable_channel(target_channel_id)
+    if target_channel is None:
+        logger.warning(
+            "Workflow requested unknown or unsendable target_channel_id=%s source_channel_id=%s",
+            target_channel_id,
+            source_channel_id,
+        )
+        await source_message.reply(
+            f"找不到可發送的目標頻道 `<#{target_channel_id}>`，原訊息如下：\n\n{response}",
+            mention_author=False,
+        )
+        return
+
+    logger.info(
+        "Sending workflow response source_channel_id=%s target_channel_id=%s response_len=%s",
+        source_channel_id,
+        target_channel_id,
+        len(response),
+    )
+    try:
+        await target_channel.send(response)
+    except discord.DiscordException as exc:
+        logger.exception("Failed to send workflow response target_channel_id=%s", target_channel_id)
+        await source_message.reply(
+            f"無法發送到目標頻道 `<#{target_channel_id}>`：{type(exc).__name__}",
+            mention_author=False,
+        )
+        return
+
+    await source_message.reply(f"已發送到 <#{target_channel_id}>。", mention_author=False)
+
+
+async def _resolve_sendable_channel(channel_id: str) -> Any | None:
+    try:
+        channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    except (ValueError, discord.DiscordException):
+        return None
+    if not hasattr(channel, "send"):
+        return None
+    return channel
 
 
 async def _resolve_referenced_message(message: discord.Message) -> discord.Message | None:
