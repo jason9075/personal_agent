@@ -89,6 +89,9 @@ def execute_workflow(
             return result.output_text
         prev_output = result.output_text
         current_input = {"message": user_msg, "prev_output": prev_output, "channel_id": channel_id}
+        reply_metadata = _direct_reply_metadata(result.action_result)
+        if reply_metadata:
+            current_input["metadata"] = reply_metadata
         current = next_node
 
     return "目前沒有可執行的節點。"
@@ -233,6 +236,24 @@ def _maybe_parse_node_decision(action_result: NodeActionResult) -> NodeDecision 
         return None
 
     return _decision_from_parsed(parsed, {})
+
+
+def _direct_reply_metadata(action_result: NodeActionResult | None) -> dict[str, str]:
+    if action_result is None or action_result.returncode != 0:
+        return {}
+    raw = action_result.stdout.strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict) or parsed.get("kind") != "reply":
+        return {}
+    metadata = parsed.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return {}
+    return {str(key): str(value) for key, value in metadata.items()}
 
 
 def _decision_from_parsed(parsed: dict, default_args: dict) -> NodeDecision | None:

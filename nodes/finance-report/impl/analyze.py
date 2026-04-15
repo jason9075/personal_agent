@@ -43,15 +43,20 @@ def build_analysis_run_output(
         f"source_author={source_author or '未提供'}",
         f"target_date={target_date.isoformat()}",
     ]
-    if audio_duration_seconds > 0:
-        minutes, seconds = divmod(int(audio_duration_seconds), 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours:
-            duration_str = f"{hours}h{minutes:02d}m{seconds:02d}s"
-        else:
-            duration_str = f"{minutes}m{seconds:02d}s"
+    duration_str = format_audio_duration(audio_duration_seconds)
+    if duration_str:
         lines.append(f"audio_duration={duration_str} ({int(audio_duration_seconds)}s)")
     return "\n".join(lines)
+
+
+def format_audio_duration(audio_duration_seconds: float) -> str:
+    if audio_duration_seconds <= 0:
+        return ""
+    minutes, seconds = divmod(int(audio_duration_seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    return f"{minutes}m{seconds:02d}s"
 
 
 def save_markdown_outputs(markdown: str, *, note_path: Path, codex_output_path: Path) -> None:

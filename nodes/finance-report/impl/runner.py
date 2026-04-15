@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Semaphore
 
-from .analyze import build_analysis_run_output, build_analysis_task_prompt
+from .analyze import build_analysis_run_output, build_analysis_task_prompt, format_audio_duration
 from .config import FinanceConfig
 from .fetcher import download_episode_media, resolve_episode
 from .logging_utils import get_logger
@@ -33,8 +33,15 @@ def prepare_finance_report(
     if note_path.exists():
         logger.info("Note already exists; returning cached note: %s", note_path)
         markdown = note_path.read_text(encoding="utf-8").strip()
+        audio_duration = _cached_audio_duration(config.download_dir, selection.target_date.isoformat())
         return FinanceReportPrepared(
-            existing_message=_format_discord_message(config.source.title, selection.target_date.isoformat(), markdown),
+            audio_duration=format_audio_duration(audio_duration),
+            existing_message=_format_discord_message(
+                config.source.title,
+                selection.target_date.isoformat(),
+                markdown,
+                audio_duration=format_audio_duration(audio_duration),
+            ),
         )
 
     logger.info("Starting media download stage")
@@ -52,6 +59,7 @@ def prepare_finance_report(
         source_title=config.source.title,
         source_author=config.source.author or "未提供",
         target_date=selection.target_date.isoformat(),
+        audio_duration=format_audio_duration(audio_duration),
         transcript_path=str(transcript_path),
         note_path=str(note_path),
         codex_output_path=str(codex_output_path),
@@ -73,9 +81,20 @@ def prepare_finance_report(
     )
 
 
-def _format_discord_message(source_title: str, target_date: str, markdown: str) -> str:
+def _cached_audio_duration(download_dir: Path, target_date: str) -> float:
+    for media_path in sorted(download_dir.glob(f"finance_{target_date}.*")):
+        duration = get_audio_duration(media_path)
+        if duration > 0:
+            return duration
+    return 0.0
+
+
+def _format_discord_message(source_title: str, target_date: str, markdown: str, *, audio_duration: str = "") -> str:
     header = f"【{source_title}｜{target_date}】"
+    duration_line = f"音檔時長：{audio_duration}" if audio_duration else ""
     content = markdown.strip()
+    if duration_line and duration_line not in content:
+        content = f"{duration_line}\n\n{content}"
     if content.startswith(header):
         return content
     return f"{header}\n\n{content}"

@@ -64,6 +64,7 @@ def main() -> int:
                 "metadata": {
                     "source_id": str(prepared["source_id"]),
                     "target_date": str(prepared["target_date"]),
+                    "audio_duration": str(prepared.get("audio_duration", "")),
                     "codex_output_path": str(prepared["codex_output_path"]),
                 },
             },

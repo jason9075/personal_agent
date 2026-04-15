@@ -48,12 +48,20 @@ def main() -> int:
     url = f"https://www.youtube.com/watch?v={video_id}"
     video_dir = _CACHE_DIR / video_id
     transcript_path = video_dir / "transcript.txt"
+    duration_path = video_dir / "duration.txt"
+    audio_duration_seconds = 0.0
 
     try:
         if transcript_path.exists():
             transcript = transcript_path.read_text(encoding="utf-8").strip()
+            audio_duration_seconds = _read_cached_duration(duration_path)
+            if audio_duration_seconds <= 0:
+                audio_duration_seconds = _duration_from_cached_audio(video_dir)
         else:
             audio_path = _download_audio(url, video_dir)
+            audio_duration_seconds = _get_audio_duration(audio_path)
+            if audio_duration_seconds > 0:
+                duration_path.write_text(f"{audio_duration_seconds:.3f}\n", encoding="utf-8")
             transcript = _transcribe(audio_path, transcript_path)
     except Exception as exc:
         print(json.dumps({"kind": "reply", "reply": f"處理失敗：{exc}"}, ensure_ascii=False))
@@ -65,7 +73,19 @@ def main() -> int:
 
     # kind:reply auto-chains to yt-summary if the edge exists;
     # returned as-is to the user if there is no successor.
-    print(json.dumps({"kind": "reply", "reply": transcript}, ensure_ascii=False))
+    print(json.dumps(
+        {
+            "kind": "reply",
+            "reply": transcript,
+            "metadata": {
+                "video_id": video_id,
+                "url": url,
+                "audio_duration": _format_audio_duration(audio_duration_seconds),
+                "audio_duration_seconds": str(int(audio_duration_seconds)) if audio_duration_seconds > 0 else "",
+            },
+        },
+        ensure_ascii=False,
+    ))
     return 0
 
 
@@ -105,6 +125,52 @@ def _transcribe(audio_path: Path, transcript_path: Path) -> str:
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
     transcript_path.write_text(text + "\n", encoding="utf-8")
     return text
+
+
+def _read_cached_duration(duration_path: Path) -> float:
+    if not duration_path.exists():
+        return 0.0
+    try:
+        return float(duration_path.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return 0.0
+
+
+def _duration_from_cached_audio(video_dir: Path) -> float:
+    for audio_path in sorted(video_dir.glob("audio.*")):
+        duration = _get_audio_duration(audio_path)
+        if duration > 0:
+            return duration
+    return 0.0
+
+
+def _get_audio_duration(audio_path: Path) -> float:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(audio_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _format_audio_duration(audio_duration_seconds: float) -> str:
+    if audio_duration_seconds <= 0:
+        return ""
+    minutes, seconds = divmod(int(audio_duration_seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    return f"{minutes}m{seconds:02d}s"
 
 
 if __name__ == "__main__":

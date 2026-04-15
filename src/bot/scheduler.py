@@ -171,6 +171,7 @@ class FinanceScheduler:
                     metadata={
                         "source_id": str(prepared["source_id"]),
                         "target_date": str(prepared["target_date"]),
+                        "audio_duration": str(prepared.get("audio_duration", "")),
                     },
                 )
                 markdown = unwrap_decision_reply(run_codex_request(request, self.repo_root)).strip()
@@ -184,6 +185,7 @@ class FinanceScheduler:
                         str(prepared["source_title"]),
                         str(prepared["target_date"]),
                         markdown,
+                        audio_duration=str(prepared.get("audio_duration", "")),
                     )
                 )
             except Exception as exc:
@@ -271,9 +273,12 @@ async def _send_to_channel(channel, content: str, limit: int = 1900) -> None:
         await channel.send(text)
 
 
-def _format_finance_report_message(source_title: str, target_date: str, markdown: str) -> str:
+def _format_finance_report_message(source_title: str, target_date: str, markdown: str, *, audio_duration: str = "") -> str:
     header = f"【{source_title}｜{target_date}】"
+    duration_line = f"音檔時長：{audio_duration.strip()}" if audio_duration.strip() else ""
     content = markdown.strip()
+    if duration_line and duration_line not in content:
+        content = f"{duration_line}\n\n{content}"
     if content.startswith(header):
         return content
     return f"{header}\n\n{content}"

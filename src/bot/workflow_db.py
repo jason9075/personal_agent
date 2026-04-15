@@ -162,14 +162,74 @@ _SEED_NODES: list[WorkflowNode] = [
         use_prev_output=False,
         timeout_seconds=300,
     ),
+    WorkflowNode(
+        id="webfetch",
+        name="Web Fetch",
+        description="Fetch a regular web page URL with Playwright and extract the page's main text content.",
+        model_name=None,
+        start_node=False,
+        enabled=True,
+        executor_path="nodes/webfetch/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        node_prompt_path=None,
+        use_prev_output=True,
+        timeout_seconds=60,
+    ),
+    WorkflowNode(
+        id="webfetch-summary",
+        name="Web Fetch Summary",
+        description="Summarize fetched web page text according to the user's requested focus or output format.",
+        model_name="gpt-5.4",
+        start_node=False,
+        enabled=True,
+        executor_path="nodes/webfetch-summary/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        node_prompt_path="nodes/webfetch-summary/node.md",
+        use_prev_output=True,
+        timeout_seconds=300,
+    ),
+    WorkflowNode(
+        id="yt-fetch",
+        name="YouTube Fetch",
+        description="Download a YouTube video's audio and transcribe it with Whisper before passing the transcript downstream.",
+        model_name=None,
+        start_node=False,
+        enabled=True,
+        executor_path="nodes/yt-fetch/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        node_prompt_path=None,
+        use_prev_output=True,
+        timeout_seconds=7200,
+    ),
+    WorkflowNode(
+        id="yt-summary",
+        name="YouTube Summary",
+        description="Summarize a YouTube transcript according to the user's requested focus or output format.",
+        model_name="gpt-5.4",
+        start_node=False,
+        enabled=True,
+        executor_path="nodes/yt-summary/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        node_prompt_path="nodes/yt-summary/node.md",
+        use_prev_output=True,
+        timeout_seconds=300,
+    ),
 ]
 
 _SEED_EDGES: list[tuple[str, str]] = [
     ("intent-router", "finance"),
     ("intent-router", "echo"),
     ("intent-router", "node-creator"),
+    ("intent-router", "webfetch"),
+    ("intent-router", "yt-fetch"),
     ("finance", "finance-report"),
     ("finance", "finance-schedule"),
+    ("webfetch", "webfetch-summary"),
+    ("yt-fetch", "yt-summary"),
 ]
 
 
@@ -187,6 +247,7 @@ def ensure_workflow_db(db_path: Path) -> None:
         )
         _seed_nodes_and_edges(conn)
         _migrate_ensure_node_creator(conn)
+        _migrate_ensure_media_nodes(conn)
         _migrate_clear_unused_model_names(conn)
         _migrate_update_finance_description(conn)
         conn.commit()
@@ -213,7 +274,37 @@ def _migrate_ensure_node_creator(conn: sqlite3.Connection) -> None:
         )
 
 
-_NO_LLM_NODE_IDS = {"echo", "finance-schedule"}
+def _migrate_ensure_media_nodes(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: ensure fetch/summary nodes and edges exist."""
+    seed_nodes = {node.id: node for node in _SEED_NODES}
+    for node_id in ("webfetch", "webfetch-summary", "yt-fetch", "yt-summary"):
+        node = seed_nodes.get(node_id)
+        if node is None:
+            continue
+        exists = conn.execute(
+            "SELECT 1 FROM workflow_nodes WHERE id = ?", (node.id,)
+        ).fetchone()
+        if not exists:
+            _upsert_node_conn(conn, node)
+
+    for from_id, to_id in (
+        ("intent-router", "webfetch"),
+        ("webfetch", "webfetch-summary"),
+        ("intent-router", "yt-fetch"),
+        ("yt-fetch", "yt-summary"),
+    ):
+        edge_exists = conn.execute(
+            "SELECT 1 FROM workflow_edges WHERE from_node_id = ? AND to_node_id = ?",
+            (from_id, to_id),
+        ).fetchone()
+        if not edge_exists:
+            conn.execute(
+                "INSERT INTO workflow_edges (from_node_id, to_node_id) VALUES (?, ?)",
+                (from_id, to_id),
+            )
+
+
+_NO_LLM_NODE_IDS = {"echo", "finance-schedule", "webfetch", "yt-fetch"}
 
 
 def _migrate_clear_unused_model_names(conn: sqlite3.Connection) -> None:
