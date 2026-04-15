@@ -72,7 +72,7 @@ def main() -> int:
     model_name: str | None = str(raw_model).strip() if raw_model else None
     timeout_seconds = int(spec.get("timeout_seconds", 120))
     use_prev_output = bool(spec.get("use_prev_output", True))
-    system_md_content = str(spec.get("system_md_content", "")).strip()
+    node_md_content = str(spec.get("node_md_content", "")).strip()
     pre_hook_py_content = str(spec.get("pre_hook_py_content", "")).strip()
     post_hook_py_content = str(spec.get("post_hook_py_content", "")).strip()
     add_edge = bool(spec.get("add_edge_from_intent_router", True))
@@ -88,9 +88,9 @@ def main() -> int:
     run_py_path.write_text(run_py_content, encoding="utf-8")
 
     node_prompt_path: str | None = None
-    if system_md_content:
-        system_md_path = node_dir / "node.md"
-        system_md_path.write_text(system_md_content, encoding="utf-8")
+    if node_md_content:
+        node_md_path = node_dir / "node.md"
+        node_md_path.write_text(node_md_content, encoding="utf-8")
         node_prompt_path = f"nodes/{node_id}/node.md"
 
     pre_hook_path: str | None = None
