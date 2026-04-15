@@ -79,6 +79,8 @@ if __name__ == "__main__":
 - `prev_output`: 前一個 node 的輸出（若 use_prev_output=true）
 - `recent_context`: 最近對話脈絡
 - `next_nodes`: 可達下一個節點清單 `[{"id":"...","name":"...","description":"..."}]`
+- `channel_id`: Discord channel id（若由 Discord 觸發）
+- `image_paths`: Discord 圖片附件下載後的本機路徑清單，最多 5 張；包含觸發訊息與被 reply 訊息中的圖片
 
 ### 輸出格式
 
@@ -147,6 +149,79 @@ if __name__ == "__main__":
 | `use_prev_output` | 是否將上一個 node 的 stdout 注入 payload 的 `prev_output` 欄位 | `true`（需要接力上下文）、`false`（standalone node） |
 | `add_edge_from_intent_router` | 是否讓 intent-router 能路由到此 node | `true`（頂層功能）、`false`（只作為子流程） |
 | `node_md_content` | 此 node 的 LLM system prompt；會寫入 `nodes/<id>/node.md` | 使用 LLM 時必填（放靜態規則/角色定義）；tool node 留空字串 |
+
+## 既有媒體能力與可重用模式
+
+建立新 node 前，先看 RUN_OUTPUT 的 `existing_nodes`。若需求可由既有 node 完成，優先更新/串接既有 node，不要重做同一套能力。
+
+### 圖片能力
+
+既有 `image-analysis` node 可處理 Discord 圖片附件：
+- 使用者可直接上傳圖片 tag bot，或 reply 一則有圖片的訊息 tag bot
+- bot 入口會先把圖片下載到 `.local/discord-images/`，再把最多 5 張本機路徑放進 payload 的 `image_paths`
+- LLM 呼叫會自動把這些路徑以 `codex exec --image <image_path>` attach 給模型
+- `image-analysis` 的定位是通用圖片理解：OCR、圖片描述、重點整理、多圖比較、抽取表格、回答圖片相關問題
+
+若你要建立需要圖片的新 node：
+- 不要自己呼叫 Discord API 下載附件；直接讀 payload 的 `image_paths`
+- 最多處理 5 張，超過時只取前 5 張
+- 若只是通用圖片問答/OCR/描述/重點，應該建議使用或更新 `image-analysis`，不要新增重複 node
+- 若是特定領域圖片流程（例如發票辨識、截圖轉工單、菜單整理），可建立專用 node，但 run.py 仍以 `image_paths` 作為輸入，輸出 `kind=infer`，由 node.md 定義該領域的靜態規則
+- 不要在 node prompt 寫死單一操作，除非使用者明確要求固定工作流；保留依照 `user_instruction` 決定 OCR、描述、摘要或問答的彈性
+
+圖片 node 的 run.py 模式：
+```python
+image_paths = payload.get("image_paths", [])
+if not isinstance(image_paths, list):
+    image_paths = []
+image_paths = [str(p) for p in image_paths[:5] if Path(str(p)).is_file()]
+if not image_paths:
+    print(json.dumps({"kind": "reply", "reply": "沒有收到可分析的圖片。"}, ensure_ascii=False))
+    return 0
+run_output = json.dumps({
+    "user_instruction": message,
+    "image_count": len(image_paths),
+    "image_paths": image_paths,
+}, ensure_ascii=False, indent=2)
+print(json.dumps({"kind": "infer", "response_mode": "passthrough", "run_output": run_output}, ensure_ascii=False))
+```
+
+### YouTube 能力
+
+既有 `yt-fetch` / `yt-summary` 流程：
+- `yt-fetch` 從使用者訊息或 `prev_output` 抽 YouTube URL，下載音訊，使用 Whisper 轉錄，並把逐字稿作為 `reply` 輸出
+- 若 DAG 有 successor edge，engine 會把 `yt-fetch` 的輸出放進下一個 node 的 `prev_output`
+- `yt-summary` 讀 `prev_output` 作為 `transcript`，再依照使用者需求摘要、整理、問答
+- 轉錄快取在 `.local/yt/<video_id>/`
+
+若你要建立 YouTube 相關 node：
+- 不要重複實作下載與 Whisper，除非使用者明確要求替換底層行為
+- 需要影片文字內容時，設計為接在 `yt-fetch` 後面，`use_prev_output=true`
+- 專用下游 node 可讀 `prev_output` 當逐字稿，並從 payload `metadata` 讀 `video_id`、`url`、`audio_duration`、`audio_duration_seconds`
+- 需要長時間下載/轉錄的 node timeout 設 7200；只做 LLM 摘要/分析通常 300
+
+### Web Fetch 能力
+
+既有 `webfetch` / `webfetch-summary` 流程：
+- `webfetch` 從使用者訊息或 `prev_output` 抽 `https?://...` URL，使用 Playwright 抓頁面並抽主要文字
+- `webfetch` 的輸出會成為下游 node 的 `prev_output`
+- `webfetch-summary` 讀 `prev_output` 當網頁內容，依照使用者需求摘要、整理、問答
+- `webfetch` 使用持久 profile：`nodes/webfetch/profile/`
+
+若你要建立網頁相關 node：
+- 不要重複實作一般網頁抓取；需要網頁正文時接在 `webfetch` 後面，`use_prev_output=true`
+- 專用下游 node 可把 `prev_output` 放入 `run_output` 的 `fetched_content`，再由 node.md 定義靜態規則
+- 若是完全不同來源或特殊認證流程，才建立新的抓取 tool node
+- 抓取/網路 node timeout 通常 300；只做 LLM 分析通常 300
+
+### 設計 DAG 的判斷
+
+- 頂層入口功能：`add_edge_from_intent_router=true`
+- 只處理前一個 node 輸出的子流程：`add_edge_from_intent_router=false`，並讓使用者後續在 DAG UI 加邊，或更新現有 workflow edge
+- 若新 node 是 `webfetch`、`yt-fetch`、`image-analysis` 的下游分析器，`use_prev_output=true`
+- 若新 node 直接處理使用者訊息或圖片 payload，`use_prev_output=false`
+- 專用分析 node 通常使用 LLM：`model_name="gpt-5.4"`，`node_md_content` 必填
+- 純下載、查 DB、呼叫 API、格式轉換等 tool node 才設 `model_name=null`
 
 ## 任務
 
