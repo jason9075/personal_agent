@@ -32,6 +32,9 @@
           uvicorn
           aiofiles
 
+          # Web scraping
+          playwright
+
           # Utilities
           python-dotenv
           tqdm
@@ -53,6 +56,7 @@
             pkgs.plantuml
             pkgs.visidata
             pkgs.tmux
+            pkgs.playwright-driver.browsers  # Chromium binary for Playwright
           ];
 
           shellHook = ''
@@ -60,6 +64,9 @@
             [ -f .env ] && export $(grep -v '^#' .env | xargs) && echo ".env loaded"
             # Avoid cross-version site-packages leaking in from non-shell Python tools.
             unset PYTHONPATH
+            # Point Playwright to the Nix-managed browser binaries
+            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+            export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
           '';
         };
       });
