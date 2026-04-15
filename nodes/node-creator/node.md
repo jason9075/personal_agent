@@ -267,6 +267,7 @@ if __name__ == "__main__":
 `image-analysis` 是直接 agent node：
 - `run.py` 驗證 payload 中的本機資源，例如 `image_paths`
 - `run_output` 放 `user_instruction` 和必要 metadata
+- 若最終內容要送到另一個 Discord channel，`target_channel_id` 必須同時放進 infer envelope 的 `metadata`，不能只放在 `run_output`
 - node.md 決定回覆風格、任務邊界、輸出格式
 - 不把 prompt 寫死在 `run.py`
 
@@ -280,6 +281,75 @@ if __name__ == "__main__":
 - 對缺少輸入、外部工具失敗、空結果都要回傳 `kind=reply` 的可讀錯誤
 - 成功結果若可能接下游，回傳的 `reply` 應該是下游可直接使用的正文，不要混入太多 UI 語氣
 - 若有額外欄位，放 `metadata`
+- 只有成功產出的最終使用者內容才應使用 `metadata.target_channel_id` 發到其他 channel；缺參數、驗證失敗、下載失敗、轉錄失敗等錯誤應回到觸發 bot 的原 channel，避免把內部錯誤或要求補資料送到公告頻道
+
+### Discord Delivery Metadata 模式
+
+當 node 支援「發到指定 channel」時，delivery routing 要由 engine 處理，不要讓 node 自己呼叫 Discord API。
+
+正確輸出方式：
+- direct reply 成功內容：
+```python
+print(json.dumps({
+    "kind": "reply",
+    "reply": final_message,
+    "metadata": {"target_channel_id": target_channel_id},
+}, ensure_ascii=False))
+```
+- passthrough / LLM agent 成功內容：
+```python
+print(json.dumps({
+    "kind": "infer",
+    "response_mode": "passthrough",
+    "run_output": run_output,
+    "metadata": {"target_channel_id": target_channel_id},
+}, ensure_ascii=False))
+```
+
+錯誤輸出方式：
+```python
+print(json.dumps({"kind": "reply", "reply": "請提供 RSS URL。"}, ensure_ascii=False))
+```
+錯誤訊息不要帶 `target_channel_id`。
+
+不要只把 `target_channel_id` 放在 `run_output` 裡，因為 `run_output` 是給 LLM 看的資料，不是 delivery routing 設定。若 node 期望 LLM 產出純文字摘要並由系統送到指定 channel，必須在 infer envelope 的 `metadata` 放 `target_channel_id`。
+
+### Schedule Replay Context 模式
+
+只要使用者要求「可以每 N 分鐘/每天/每週檢查並發送嗎」、「把剛剛那個任務排程化」、「如果有新的就發到 channel」這種 schedule 服務，必須把排程視為未來會獨立重播的工作。
+
+排程 node 不能只保存一段自然語言 `task_message`，也不能假設未來執行時還有當下對話、reply 原文、上一個 node 的 `prev_output` 或 LLM 記憶。排程資料必須保存足以重跑工作的 structured args：
+- 外部來源：RSS URL、API endpoint、source alias、repo/path、查詢條件等
+- 任務設定：title/latest/all、digest_instruction、語言、格式、篩選條件
+- 發送設定：target_channel_id、是否只回原 channel、是否 ping
+- 執行狀態：last_seen_guid、last_seen_url、last_success_at、dedupe key、cache path 等，用來避免每次都重發同一集/同一筆資料
+- 專用參數：例如 finance report 要保存 `source`、`workers`；podcast digest 要保存 `feed_url/source`、`title/latest`、`digest_instruction`、`target_channel_id`
+
+若服務本身有 schedule 功能，優先建立專用 schedule tool node 或專用 schedule table，而不是只依賴泛用 `schedule` 的 `job_type=workflow + task_message`。泛用 workflow schedule 只適合不需要隱藏上下文、可用一句完整指令重建所有輸入的簡單任務。
+
+當使用者在成功執行某任務後 reply 說「幫我把這個設成排程」時：
+- router/schedule node 必須從被 reply 的訊息、`prev_output`、metadata、cache 或服務自己的 source registry 裡找回完整來源資料
+- 如果找不到 RSS URL/source/API key 等必要欄位，應要求使用者補齊，不要建立一個未來必定失敗的排程
+- 新增排程前應確認排程 record 裡已經有完整 structured args；回覆使用者時列出已保存的關鍵欄位，例如 source/feed、目標 channel、cron、dedupe 策略
+
+範例錯誤設計：
+```json
+{"job_type":"workflow","task_message":"檢查 Awesome News Daily 是否有最新一集，有的話摘要後發送"}
+```
+這會失敗，因為未來執行時不知道 RSS URL。
+
+範例正確設計：
+```json
+{
+  "job_type": "podcast-digest",
+  "source": "https://example.com/rss.xml",
+  "title": "",
+  "latest": true,
+  "digest_instruction": "整理成重點摘要",
+  "target_channel_id": "1493950920470302881",
+  "last_seen_guid": "episode-guid-or-empty"
+}
+```
 
 ### Long Running / Side Effect 模式
 

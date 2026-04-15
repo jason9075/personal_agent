@@ -330,7 +330,7 @@ def _extract_delivery_response(raw: str) -> tuple[str, str]:
 
 
 def _target_channel_from_action_result(action_result: NodeActionResult | None) -> str:
-    metadata = _direct_reply_metadata(action_result)
+    metadata = _action_result_metadata(action_result)
     return _normalize_channel_id(
         metadata.get("target_channel_id")
         or metadata.get("channel_id")
@@ -352,6 +352,24 @@ def _set_response_metadata(metadata: dict[str, str] | None, *, target_channel_id
         return
     if target_channel_id:
         metadata["target_channel_id"] = target_channel_id
+
+
+def _action_result_metadata(action_result: NodeActionResult | None) -> dict[str, str]:
+    if action_result is None or action_result.returncode != 0:
+        return {}
+    raw = action_result.stdout.strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    metadata = parsed.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return {}
+    return {str(key): str(value) for key, value in metadata.items()}
 
 
 def _execute_executor(
