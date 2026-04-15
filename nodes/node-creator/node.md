@@ -227,7 +227,7 @@ if __name__ == "__main__":
 
 ### Domain Router + Worker 模式
 
-`finance -> finance-report / finance-schedule` 是服務拆分範例：
+`intent-router -> schedule` 與 `finance -> finance-report` 是服務拆分範例：
 - domain router 先讀使用者訊息、已知來源、既有檔案庫存，輸出 `decision`
 - long-running worker 負責下載、轉錄、產報告
 - schedule/tool worker 不呼叫 LLM，直接執行確定性動作
@@ -274,7 +274,7 @@ if __name__ == "__main__":
 
 ### Tool Node 模式
 
-`finance-schedule`、`webfetch`、`yt-fetch` 是 tool node：
+`schedule`、`webfetch`、`yt-fetch` 是 tool node：
 - `model_name=null`
 - 不產生 `node_md_content`
 - 對缺少輸入、外部工具失敗、空結果都要回傳 `kind=reply` 的可讀錯誤

@@ -1,4 +1,4 @@
-"""Run finance schedule management actions as a node executor."""
+"""Run generic schedule management actions as a node executor."""
 from __future__ import annotations
 
 import argparse
@@ -14,8 +14,6 @@ from src.bot.nodes import execute_schedule_action  # noqa: E402
 
 
 def main() -> int:
-    # --args-json protocol: engine passes a JSON blob as the sole argument.
-    # Fall back to individual flags for backward compatibility.
     if "--args-json" in sys.argv:
         idx = sys.argv.index("--args-json")
         payload: dict[str, object] = json.loads(sys.argv[idx + 1])
@@ -25,11 +23,19 @@ def main() -> int:
         parser.add_argument("--id", type=int, default=0)
         parser.add_argument("--name", default="")
         parser.add_argument("--cron", default="")
+        parser.add_argument("--job-type", default="finance-report")
+        parser.add_argument("--task-message", default="")
         parser.add_argument("--source", default="")
         parser.add_argument("--workers", type=int, default=4)
         parser.add_argument("--channel", default="")
+        parser.add_argument("--run-once", action="store_true")
         args = parser.parse_args()
-        payload = {"action": args.action}
+        payload = {
+            "action": args.action,
+            "job_type": args.job_type,
+            "task_message": args.task_message,
+            "run_once": args.run_once,
+        }
         if args.id:
             payload["id"] = args.id
         if args.name:
@@ -44,7 +50,6 @@ def main() -> int:
         print(execute_schedule_action(payload, channel_id=channel_id))
         return 0
 
-    # --args-json path: channel_id may be embedded in payload
     channel_id = str(payload.pop("channel_id", "")).strip()
     reply = execute_schedule_action(payload, channel_id=channel_id)
     print(json.dumps({"kind": "reply", "reply": reply}, ensure_ascii=False))

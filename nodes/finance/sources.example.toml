@@ -5,13 +5,8 @@ author = "游庭皓"
 rss_url = "https://feeds.soundcloud.com/users/soundcloud:users:735679489/sounds.rss"
 
 [[sources]]
-id = "soundon-954689a5"
-title = "股癌Gooaye"
-author = "謝孟恭"
-rss_url = "https://feeds.soundon.fm/podcasts/954689a5-3096-43a4-a80b-7810b219cef3.xml"
+id = "tech_wave"
+title = "科技浪"
+author = "哈利說"
+rss_url = "https://feed.firstory.me/rss/user/cm3o5681s06e801v3fxpjehwb"
 
-[[sources]]
-id = "soundon-c27d634c"
-title = "王老先聲"
-author = "王倚隆"
-rss_url = "https://feeds.soundon.fm/podcasts/c27d634c-7d80-4924-ab3d-7655123d0fe3.xml"

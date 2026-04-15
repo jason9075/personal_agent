@@ -95,7 +95,7 @@ _SEED_NODES: list[WorkflowNode] = [
     WorkflowNode(
         id="finance",
         name="Finance",
-        description="Handles finance questions, finance report generation, and finance schedule management such as recurring checks, cron jobs, and manual report runs.",
+        description="Handles finance questions and finance report generation.",
         model_name="gpt-5.4",
         start_node=False,
         enabled=True,
@@ -121,13 +121,13 @@ _SEED_NODES: list[WorkflowNode] = [
         timeout_seconds=7200,
     ),
     WorkflowNode(
-        id="finance-schedule",
-        name="Finance Schedule",
-        description="Manage finance report schedules stored in SQLite.",
+        id="schedule",
+        name="Schedule",
+        description="Manage scheduled bot jobs, including finance reports and generic workflow tasks.",
         model_name=None,
         start_node=False,
         enabled=True,
-        executor_path="nodes/finance-schedule/run.py",
+        executor_path="nodes/schedule/run.py",
         pre_hook_path=None,
         post_hook_path=None,
         node_prompt_path=None,
@@ -238,11 +238,11 @@ _SEED_EDGES: list[tuple[str, str]] = [
     ("intent-router", "finance"),
     ("intent-router", "echo"),
     ("intent-router", "node-creator"),
+    ("intent-router", "schedule"),
     ("intent-router", "webfetch"),
     ("intent-router", "yt-fetch"),
     ("intent-router", "image-analysis"),
     ("finance", "finance-report"),
-    ("finance", "finance-schedule"),
     ("webfetch", "webfetch-summary"),
     ("yt-fetch", "yt-summary"),
 ]
@@ -342,7 +342,7 @@ def _migrate_ensure_image_analysis_node(conn: sqlite3.Connection) -> None:
         )
 
 
-_NO_LLM_NODE_IDS = {"echo", "finance-schedule", "webfetch", "yt-fetch"}
+_NO_LLM_NODE_IDS = {"echo", "schedule", "webfetch", "yt-fetch"}
 
 
 def _migrate_clear_unused_model_names(conn: sqlite3.Connection) -> None:

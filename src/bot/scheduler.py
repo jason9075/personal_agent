@@ -1,4 +1,4 @@
-"""In-process cron-like scheduler for finance report jobs."""
+"""In-process cron-like scheduler for bot jobs."""
 from __future__ import annotations
 
 import asyncio
@@ -38,7 +38,7 @@ class FinanceScheduler:
 
     def start(self) -> None:
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run_loop(), name="finance-scheduler")
+            self._task = asyncio.create_task(self._run_loop(), name="bot-scheduler")
 
     async def _run_loop(self) -> None:
         logger = get_logger()
@@ -101,7 +101,7 @@ class FinanceScheduler:
                 await channel.send(f"{trigger_text} `{job.name}` 開始執行，處理中…")
 
         try:
-            output = await asyncio.to_thread(self._run_finance_report_job, job)
+            output = await asyncio.to_thread(self._run_scheduled_job, job)
             status = "ok"
         except Exception as exc:
             status = "error"
@@ -198,6 +198,29 @@ class FinanceScheduler:
                 details = "\n".join(outputs + ["", "Errors:", details])
             raise RuntimeError(details)
         return "\n\n".join(output.strip() for output in outputs if output.strip()) or "(no output)"
+
+    def _run_scheduled_job(self, job: ScheduledJob) -> str:
+        if job.job_type == "finance-report":
+            return self._run_finance_report_job(job)
+        if job.job_type == "workflow":
+            return self._run_workflow_job(job)
+        raise RuntimeError(f"unsupported schedule job_type: {job.job_type}")
+
+    def _run_workflow_job(self, job: ScheduledJob) -> str:
+        from .config import WORKFLOW_DB_PATH
+        from .engine import execute_workflow
+
+        task_message = job.task_message.strip()
+        if not task_message:
+            raise RuntimeError("workflow schedule job requires task_message")
+        response_metadata: dict[str, str] = {}
+        return execute_workflow(
+            task_message,
+            WORKFLOW_DB_PATH,
+            self.repo_root,
+            channel_id=job.channel_id,
+            response_metadata=response_metadata,
+        ).strip()
 
 
 def cron_matches(expr: str, current: datetime) -> bool:
