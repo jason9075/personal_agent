@@ -8,7 +8,7 @@ from .analyze import build_analysis_run_output, build_analysis_task_prompt
 from .config import FinanceConfig
 from .fetcher import download_episode_media, resolve_episode
 from .logging_utils import get_logger
-from .transcribe import transcribe_video
+from .transcribe import get_audio_duration, transcribe_video
 
 WHISPER_CONCURRENCY = 1
 CODEX_CONCURRENCY = 4
@@ -40,6 +40,8 @@ def prepare_finance_report(
     logger.info("Starting media download stage")
     result = download_episode_media(config, selection)
     logger.info("Download stage completed: %s", result.media_path)
+    audio_duration = get_audio_duration(result.media_path)
+    logger.info("Audio duration: %.1f seconds", audio_duration)
     logger.info("Waiting for Whisper slot")
     with whisper_slots:
         logger.info("Starting transcription stage with model %s", config.whisper_model)
@@ -59,6 +61,7 @@ def prepare_finance_report(
             source_title=config.source.title,
             source_author=config.source.author,
             target_date=selection.target_date,
+            audio_duration_seconds=audio_duration,
         ),
         task_prompt=build_analysis_task_prompt(
             transcript_path=transcript_path,
