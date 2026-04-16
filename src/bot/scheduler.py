@@ -91,8 +91,9 @@ class FinanceScheduler:
         trigger: Literal["manual", "schedule"],
     ) -> None:
         logger = get_logger()
+        input_payload = parse_input_json(job.input_json)
 
-        if job.channel_id:
+        if job.channel_id and _should_send_start_message(input_payload, trigger=trigger):
             channel = cast(Any, self.client.get_channel(int(job.channel_id)))
             if channel is not None:
                 trigger_text = "手動觸發" if trigger == "manual" else "排程"
@@ -129,7 +130,8 @@ class FinanceScheduler:
         if channel is None:
             return
         if status == "ok":
-            await _send_to_channel(channel, output)
+            if output.strip():
+                await _send_to_channel(channel, output)
         else:
             trigger_text = "手動觸發" if trigger == "manual" else "排程"
             prefix = f"{trigger_text} `{job.name}` 執行失敗"
@@ -179,6 +181,29 @@ def cron_matches(expr: str, current: datetime) -> bool:
         and current.month in spec.month
         and weekday in spec.weekday
     )
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _should_send_start_message(input_payload: dict[str, Any], *, trigger: Literal["manual", "schedule"]) -> bool:
+    if trigger == "manual":
+        return True
+    args = input_payload.get("args", {})
+    if not isinstance(args, dict):
+        return True
+    silent_flags = (
+        args.get("silent_on_error"),
+        args.get("silent_on_no_match"),
+        args.get("silent_on_no_new"),
+        args.get("silent_if_no_new_episode"),
+    )
+    return not any(_as_bool(flag) for flag in silent_flags)
 
 
 def parse_cron(expr: str) -> CronSpec:
