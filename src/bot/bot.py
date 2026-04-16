@@ -29,6 +29,7 @@ repo_root = Path(__file__).resolve().parents[2]
 _IMAGE_ATTACHMENT_DIR = repo_root / ".local" / "discord-images"
 _IMAGE_EXTENSIONS = {".apng", ".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 _MAX_IMAGE_ATTACHMENTS = 5
+_MAX_REFERENCE_DEPTH = 20
 scheduler = FinanceScheduler(SCHEDULE_DB_PATH, repo_root, client)
 logger = get_logger()
 
@@ -72,14 +73,14 @@ async def on_message(message: discord.Message) -> None:
     for mention in (f"<@{bot_user.id}>", f"<@!{bot_user.id}>"):
         content = content.replace(mention, "")
     content = content.strip()
-    referenced_message = await _resolve_referenced_message(message)
-    image_paths = await _collect_image_paths(message, referenced_message)
-    workflow_message = _build_workflow_message(content, referenced_message, image_paths)
+    referenced_messages = await _resolve_referenced_messages(message)
+    image_paths = await _collect_image_paths(message, referenced_messages)
+    workflow_message = _build_workflow_message(content, referenced_messages, image_paths)
     logger.info(
-        "Received mentioned message user_id=%s channel_id=%s has_reference=%s image_count=%s content=%r",
+        "Received mentioned message user_id=%s channel_id=%s reference_depth=%s image_count=%s content=%r",
         message.author.id,
         message.channel.id,
-        referenced_message is not None,
+        len(referenced_messages),
         len(image_paths),
         workflow_message[:500],
     )
@@ -166,8 +167,38 @@ async def _resolve_sendable_channel(channel_id: str) -> Any | None:
     return channel
 
 
-async def _resolve_referenced_message(message: discord.Message) -> discord.Message | None:
-    """Return the Discord message that the triggering message replied to."""
+async def _resolve_referenced_messages(message: discord.Message) -> list[discord.Message]:
+    """Return the replied-to message chain, closest reply first."""
+    referenced_messages: list[discord.Message] = []
+    seen_message_ids = {message.id}
+    current = message
+
+    for _ in range(_MAX_REFERENCE_DEPTH):
+        referenced_message = await _resolve_single_referenced_message(current)
+        if referenced_message is None:
+            break
+        if referenced_message.id in seen_message_ids:
+            logger.warning(
+                "Stopped Discord reference traversal because a cycle was detected message_id=%s",
+                referenced_message.id,
+            )
+            break
+        referenced_messages.append(referenced_message)
+        seen_message_ids.add(referenced_message.id)
+        current = referenced_message
+
+    if len(referenced_messages) >= _MAX_REFERENCE_DEPTH:
+        logger.warning(
+            "Stopped Discord reference traversal at max_depth=%s source_message_id=%s",
+            _MAX_REFERENCE_DEPTH,
+            message.id,
+        )
+
+    return referenced_messages
+
+
+async def _resolve_single_referenced_message(message: discord.Message) -> discord.Message | None:
+    """Return the Discord message that *message* replied to."""
     reference = message.reference
     if reference is None:
         return None
@@ -197,12 +228,10 @@ async def _resolve_referenced_message(message: discord.Message) -> discord.Messa
 
 async def _collect_image_paths(
     message: discord.Message,
-    referenced_message: discord.Message | None,
+    referenced_messages: list[discord.Message],
 ) -> list[str]:
     paths: list[str] = []
-    for source_message in (referenced_message, message):
-        if source_message is None:
-            continue
+    for source_message in [*reversed(referenced_messages), message]:
         for attachment in source_message.attachments:
             if len(paths) >= _MAX_IMAGE_ATTACHMENTS:
                 return paths
@@ -247,25 +276,26 @@ def _safe_filename(filename: str) -> str:
 
 def _build_workflow_message(
     user_content: str,
-    referenced_message: discord.Message | None,
+    referenced_messages: list[discord.Message],
     image_paths: list[str],
 ) -> str:
     image_text = _format_image_paths(image_paths)
-    if referenced_message is None:
+    if not referenced_messages:
         return "\n\n".join(part for part in (user_content, image_text) if part)
 
-    reference_text = _format_referenced_message(referenced_message)
+    reference_text = _format_reference_chain(referenced_messages)
     if user_content:
         return "\n\n".join(part for part in (
-            "使用者在 Discord 回覆一則訊息並 tag 你。\n\n"
+            "使用者在 Discord 回覆一則訊息並 tag 你。"
+            "以下是沿著 Discord reply/reference 往上追溯到源頭的引用鏈。\n\n"
             f"使用者補充：\n{user_content}\n\n"
-            f"被回覆的訊息：\n{reference_text}",
+            f"引用鏈：\n{reference_text}",
             image_text,
         ) if part)
     return "\n\n".join(part for part in (
         "使用者在 Discord 回覆一則訊息並 tag 你。"
-        "請根據被回覆的訊息內容接著回覆。\n\n"
-        f"被回覆的訊息：\n{reference_text}",
+        "請根據整條引用鏈的上下文接著回覆。\n\n"
+        f"引用鏈：\n{reference_text}",
         image_text,
     ) if part)
 
@@ -275,6 +305,17 @@ def _format_image_paths(image_paths: list[str]) -> str:
         return ""
     formatted_paths = "\n".join(f"- {path}" for path in image_paths)
     return f"附加圖片已提供給 LLM，路徑如下：\n{formatted_paths}"
+
+
+def _format_reference_chain(referenced_messages: list[discord.Message]) -> str:
+    chronological_messages = list(reversed(referenced_messages))
+    formatted_messages = []
+    total = len(chronological_messages)
+    for index, message in enumerate(chronological_messages, start=1):
+        formatted_messages.append(
+            f"[{index}/{total}]\n{_format_referenced_message(message)}"
+        )
+    return "\n\n".join(formatted_messages)
 
 
 def _format_referenced_message(message: discord.Message) -> str:
