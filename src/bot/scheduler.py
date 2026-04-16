@@ -93,7 +93,7 @@ class FinanceScheduler:
         logger = get_logger()
         input_payload = parse_input_json(job.input_json)
 
-        if job.channel_id and _should_send_start_message(input_payload, trigger=trigger):
+        if job.channel_id and job.notify_before_run and _should_send_start_message(input_payload, trigger=trigger):
             channel = cast(Any, self.client.get_channel(int(job.channel_id)))
             if channel is not None:
                 trigger_text = "手動觸發" if trigger == "manual" else "排程"

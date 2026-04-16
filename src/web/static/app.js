@@ -1062,6 +1062,7 @@ async function openCronModal(jobId = null) {
     document.getElementById('cj-channel-id').value = job.channel_id || '';
     document.getElementById('cj-enabled').checked = job.enabled;
     document.getElementById('cj-run-once').checked = job.run_once || false;
+    document.getElementById('cj-notify-before-run').checked = job.notify_before_run !== false;
     document.getElementById('cron-modal').classList.remove('hidden');
   } else {
     title.textContent = 'Add Job';
@@ -1072,6 +1073,7 @@ async function openCronModal(jobId = null) {
     document.getElementById('cj-channel-id').value = '';
     document.getElementById('cj-enabled').checked = true;
     document.getElementById('cj-run-once').checked = false;
+    document.getElementById('cj-notify-before-run').checked = true;
     document.getElementById('cron-modal').classList.remove('hidden');
   }
 }
@@ -1164,6 +1166,7 @@ document.getElementById('cj-confirm').addEventListener('click', async () => {
     channel_id: document.getElementById('cj-channel-id').value.trim(),
     enabled: document.getElementById('cj-enabled').checked,
     run_once: document.getElementById('cj-run-once').checked,
+    notify_before_run: document.getElementById('cj-notify-before-run').checked,
   };
   try {
     if (cronEditingId !== null) {
