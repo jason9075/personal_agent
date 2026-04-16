@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 nix develop          # enter dev shell (fastapi, uvicorn, aiofiles, discordpy, whisper …)
 just bot             # run bot + web server (same process, web on :8765)
-just watch           # auto-restart on .py / .toml changes
+just watch           # auto-restart on .py / .toml / .html / .css / .js / .md changes
 
 just finance-sources                        # list configured RSS sources
 just finance-report                         # process all sources (latest episode)
@@ -70,12 +70,15 @@ pre_hook.py? -> run.py -> post_hook.py?
 
 | File | Role |
 |------|------|
-| `src/bot/bot.py` | Discord event loop + asyncio.gather with web server |
+| `src/bot/bot.py` | Discord event loop + asyncio.gather with web server; reply chain resolution |
 | `src/bot/engine.py` | workflow execution loop, routing, node lifecycle |
 | `src/bot/workflow_db.py` | SQLite schema/CRUD for nodes and edges; seed data; hook scanning |
+| `src/bot/workflow_trace_db.py` | SQLite schema/CRUD for workflow execution traces |
 | `src/bot/nodes.py` | Execution helpers and reply formatters |
 | `src/bot/scheduler.py` | In-process cron scheduler (polls every 30 s) |
 | `src/bot/schedule_db.py` | SQLite schema/CRUD for scheduled jobs |
+| `src/bot/llm.py` | Centralised LLM (OpenAI/Anthropic) call wrapper; image support |
+| `src/bot/llm_log_db.py` | SQLite schema/CRUD for LLM call audit log |
 | `src/bot/prompts.py` | Loads prompt templates from node-local markdown files |
 | `src/bot/config.py` | Env-backed constants |
 | `src/bot/logging_utils.py` | Shared logger setup |
@@ -87,8 +90,14 @@ pre_hook.py? -> run.py -> post_hook.py?
 | `nodes/finance/` | Finance decision node and source catalog |
 | `nodes/finance-report/` | Finance node prompts and generated notes |
 | `nodes/finance-report/impl/runner.py` | Finance report pipeline entry point |
-| `nodes/finance-schedule/` | Schedule management node |
+| `nodes/schedule/` | Schedule management node |
 | `nodes/echo/` | Testing/echo node |
+| `nodes/node-creator/` | Dynamic node generation (LLM + post_hook registration) |
+| `nodes/webfetch/` | Web page fetch via Playwright |
+| `nodes/webfetch-summary/` | Web page summarisation |
+| `nodes/yt-fetch/` | YouTube download + Whisper transcription |
+| `nodes/yt-summary/` | YouTube content summarisation |
+| `nodes/image-analysis/` | Image analysis via LLM |
 | `nodes/*/run.py` | Node executors (`--args-json` protocol) |
 
 ### Workflow Graph DB Schema
@@ -100,9 +109,9 @@ workflow_nodes(
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
-    model_name TEXT NOT NULL DEFAULT 'gpt-5.4',
+    model_name TEXT NOT NULL DEFAULT '',     -- empty = no LLM; non-empty = LLM model ID
     start_node INTEGER NOT NULL DEFAULT 0,
-    enabled INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,      -- 0 = node skipped by routing
     executor_path TEXT NOT NULL DEFAULT '',
     pre_hook_path TEXT NOT NULL DEFAULT '',
     post_hook_path TEXT NOT NULL DEFAULT '',
@@ -117,6 +126,57 @@ workflow_edges(
     to_node_id TEXT NOT NULL,
     FOREIGN KEY (from_node_id) REFERENCES workflow_nodes(id),
     FOREIGN KEY (to_node_id) REFERENCES workflow_nodes(id)
+)
+```
+
+### Schedule DB Schema
+
+Table in `db/bot_scheduler.sqlite3`:
+
+```sql
+scheduled_jobs(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    cron_expr TEXT NOT NULL,                     -- 5-field cron (minute hour day month weekday)
+    start_node_id TEXT NOT NULL,
+    input_json TEXT NOT NULL DEFAULT '{}',       -- {message, args, metadata}
+    channel_id TEXT NOT NULL DEFAULT '',         -- Discord channel to post result
+    enabled INTEGER NOT NULL DEFAULT 1,
+    run_once INTEGER NOT NULL DEFAULT 0,         -- auto-delete after first run
+    notify_before_run INTEGER NOT NULL DEFAULT 1,-- send "starting…" message before execution
+    last_run_at TEXT NOT NULL DEFAULT '',
+    last_status TEXT NOT NULL DEFAULT '',
+    last_message TEXT NOT NULL DEFAULT ''
+)
+```
+
+### Workflow Trace DB Schema
+
+Table in `db/workflow_trace.sqlite3`:
+
+```sql
+workflow_runs(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT, finished_at TEXT,
+    status TEXT,            -- ok / error
+    start_node_id TEXT,
+    trigger TEXT,           -- discord / cron / manual / debug
+    channel_id TEXT,
+    message TEXT,
+    error TEXT,
+    node_count INTEGER
+)
+
+workflow_node_logs(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER,         -- FK → workflow_runs.id
+    seq INTEGER,
+    node_id TEXT,
+    status TEXT,
+    started_at TEXT, finished_at TEXT,
+    input_json TEXT,
+    output_json TEXT,
+    error TEXT
 )
 ```
 
@@ -138,11 +198,17 @@ Engine injects into `--args-json` payload automatically:
 
 | Node ID | Behaviour | Role |
 |---------|-----------|------|
-| `intent-router` | decision (JSON) | Start node; routes to finance or echo |
-| `finance` | decision (JSON) | Finance domain; routes to finance-report or finance-schedule |
+| `intent-router` | decision (JSON) | Start node; routes to finance, echo, node-creator, schedule, webfetch, yt-fetch, image-analysis |
+| `finance` | decision (JSON) | Finance domain; routes to finance-report |
 | `finance-report` | direct reply (stdout) | RSS fetch → transcribe → LLM digest → Discord post |
-| `finance-schedule` | direct reply (stdout) | CRUD for scheduled finance jobs |
+| `schedule` | direct reply (stdout) | CRUD for scheduled jobs via natural language |
 | `echo` | direct reply (stdout) | Testing node; returns input text directly |
+| `node-creator` | direct reply (stdout) | Dynamically generates new node files via LLM |
+| `webfetch` | direct reply (stdout) | Fetch web page content via Playwright |
+| `webfetch-summary` | direct reply (stdout) | Summarise fetched web content |
+| `yt-fetch` | direct reply (stdout) | Download YouTube audio + Whisper transcription |
+| `yt-summary` | direct reply (stdout) | Summarise YouTube transcript |
+| `image-analysis` | direct reply (stdout) | Analyse images via LLM vision |
 
 ### Finance Report Pipeline
 
@@ -151,6 +217,18 @@ Triggered via Discord or in-process cron scheduler:
 2. `finance-report` fetches RSS → resolves episode → downloads audio → transcribes (Whisper, concurrency 1) → analyses (LLM, concurrency 4) → writes `nodes/finance-report/notes/<id>/note_<date>.md` → posts to `FINANCE_REPORT_CHANNEL_ID`
 
 Previously written notes are reused (skips reprocessing if note exists).
+
+### Reply Chain
+
+When the user replies to a Discord message, `bot.py` resolves the full reply chain (up to 20 levels deep) and passes it as formatted context into the workflow `message` field.
+
+### Workflow Traces
+
+Every workflow execution is recorded in `workflow_trace_db`. The web UI exposes a **Trace** tab showing execution history and per-node I/O logs. API: `GET /api/traces/runs`, `GET /api/traces/runs/{run_id}`.
+
+### Scheduler — notify_before_run
+
+Each scheduled job has a `notify_before_run` flag (default `true`). When `true` and `channel_id` is set, the scheduler sends a "starting…" message to the channel before executing the workflow. Set to `false` to suppress the pre-run notification (result is still posted after completion).
 
 ## Configuration
 
@@ -165,9 +243,10 @@ Finance sources in `nodes/finance/sources.toml` (see `nodes/finance/sources.exam
 ## Generated Artifacts (git-ignored)
 
 | Path | Contents |
-|------|----------|
+|------|------------|
 | `db/workflow.sqlite3` | Workflow graph state (created on first run) |
 | `db/bot_scheduler.sqlite3` | Scheduled job state |
+| `db/workflow_trace.sqlite3` | Workflow execution traces |
 | `.local/finance/` | Downloads, transcripts, codex output, logs |
 | `.local/bot/logs/` | Bot runtime logs |
 | `nodes/finance-report/notes/` | Final markdown notes per source |
