@@ -251,8 +251,10 @@ html, body {
 
 #cron-table {
   width: 100%;
+  min-width: 1180px;
   border-collapse: collapse;
   font-size: 12px;
+  table-layout: fixed;
 }
 
 #cron-table th,
@@ -279,6 +281,25 @@ html, body {
 #cron-table td { color: var(--nord5); }
 #cron-table td.mono { font-family: var(--mono); font-size: 11px; color: var(--nord8); }
 #cron-table td.dim  { color: var(--muted); font-size: 11px; }
+#cron-table th:nth-child(1), #cron-table td:nth-child(1) { width: 42px; }
+#cron-table th:nth-child(2), #cron-table td:nth-child(2) { width: 150px; }
+#cron-table th:nth-child(3), #cron-table td:nth-child(3) { width: 120px; }
+#cron-table th:nth-child(4), #cron-table td:nth-child(4) { width: 140px; }
+#cron-table th:nth-child(5), #cron-table td:nth-child(5) { width: 260px; }
+#cron-table th:nth-child(6), #cron-table td:nth-child(6) { width: 130px; }
+#cron-table th:nth-child(7), #cron-table td:nth-child(7) { width: 76px; }
+#cron-table th:nth-child(8), #cron-table td:nth-child(8) { width: 80px; }
+#cron-table th:nth-child(9), #cron-table td:nth-child(9) { width: 150px; }
+#cron-table th:nth-child(10), #cron-table td:nth-child(10) { width: 82px; }
+#cron-table th:nth-child(11), #cron-table td:nth-child(11) { width: 270px; }
+
+.cron-truncate {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .status-ok  { color: var(--success); font-weight: 600; }
 .status-err { color: var(--danger); font-weight: 600; }

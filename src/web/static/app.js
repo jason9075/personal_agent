@@ -619,6 +619,12 @@ function escapeHtml(text) {
     .replaceAll('>', '&gt;');
 }
 
+function escapeAttr(text) {
+  return escapeHtml(String(text || ''))
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function highlightPython(text) {
   let html = text;
   html = html.replace(/(#.*)$/gm, '<span class="tok-comment">$1</span>');
@@ -1005,12 +1011,13 @@ function renderCronTable(jobs) {
       : '<span class="status-err">●</span>';
     const toggleLabel = job.enabled ? 'Disable' : 'Enable';
     const toggleClass = job.enabled ? 'btn-secondary' : 'btn-primary';
+    const inputPreview = formatCronInputPreview(job.input || {});
     return `<tr>
       <td class="dim">${job.id}</td>
-      <td>${escapeHtml(job.name)}</td>
+      <td><span class="cron-truncate" title="${escapeAttr(job.name)}">${escapeHtml(job.name)}</span></td>
       <td class="mono">${escapeHtml(job.cron_expr)}</td>
       <td class="mono">${escapeHtml(job.start_node_id || '—')}</td>
-      <td>${escapeHtml(formatCronInputPreview(job.input || {}))}</td>
+      <td><span class="cron-truncate" title="${escapeAttr(inputPreview)}">${escapeHtml(inputPreview)}</span></td>
       <td class="mono">${escapeHtml(job.channel_id || '—')}</td>
       <td>${enabledBadge}</td>
       <td>${job.run_once ? '<span class="status-ok">●</span>' : '<span class="dim">—</span>'}</td>
@@ -1033,7 +1040,7 @@ function formatCronInputPreview(input) {
   const args = input.args && typeof input.args === 'object' ? input.args : {};
   const argsText = Object.keys(args).length ? JSON.stringify(args) : '{}';
   const text = `${message || '(empty)'} | ${argsText}`;
-  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+  return text.length > 72 ? `${text.slice(0, 69)}...` : text;
 }
 
 async function openCronModal(jobId = null) {
@@ -1071,9 +1078,12 @@ async function openCronModal(jobId = null) {
 
 async function populateCronStartNodes() {
   const select = document.getElementById('cj-start-node');
-  let nodes = (S.graphData && S.graphData.nodes) ? S.graphData.nodes : [];
-  if (!nodes.length) nodes = await GET('/api/nodes');
+  const nodes = await GET('/api/nodes');
   const enabledNodes = nodes.filter(node => node.enabled);
+  if (!enabledNodes.length) {
+    select.innerHTML = '<option value="">No enabled nodes</option>';
+    return;
+  }
   select.innerHTML = enabledNodes.map(node => (
     `<option value="${escapeHtml(node.id)}">${escapeHtml(node.id)} — ${escapeHtml(node.name || node.id)}</option>`
   )).join('');
