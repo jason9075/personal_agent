@@ -1003,6 +1003,8 @@ function renderCronTable(jobs) {
     const enabledBadge = job.enabled
       ? '<span class="status-ok">●</span>'
       : '<span class="status-err">●</span>';
+    const toggleLabel = job.enabled ? 'Disable' : 'Enable';
+    const toggleClass = job.enabled ? 'btn-secondary' : 'btn-primary';
     return `<tr>
       <td class="dim">${job.id}</td>
       <td>${escapeHtml(job.name)}</td>
@@ -1017,6 +1019,7 @@ function renderCronTable(jobs) {
       <td>
         <div class="btn-row" style="margin:0;gap:4px">
           <button class="btn btn-primary btn-sm" onclick="runCronJobNow(${job.id})">Run now</button>
+          <button class="btn ${toggleClass} btn-sm" onclick="toggleCronJob(${job.id}, ${job.enabled ? 'false' : 'true'})">${toggleLabel}</button>
           <button class="btn btn-secondary btn-sm" onclick="openCronModal(${job.id})">Edit</button>
           <button class="btn btn-danger btn-sm" onclick="deleteCronJob(${job.id})">Delete</button>
         </div>
@@ -1101,6 +1104,16 @@ async function runCronJobNow(jobId) {
     toast(err.message, 'err');
   } finally {
     cronRunBusy = false;
+  }
+}
+
+async function toggleCronJob(jobId, enabled) {
+  try {
+    await PUT(`/api/schedule/jobs/${jobId}`, { enabled });
+    await loadCronJobs();
+    toast(enabled ? 'Job enabled' : 'Job disabled');
+  } catch (err) {
+    toast(err.message, 'err');
   }
 }
 

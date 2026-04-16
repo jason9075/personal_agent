@@ -90,7 +90,37 @@ user context  = RUN_OUTPUT（run.py 的 run_output）+ TASK PROMPT（run.py 的 
 
 ## Node 協議
 
-每個 Node 是 `nodes/<node_id>/run.py`，透過 `--args-json` 接收 JSON 參數，結果輸出到 stdout。
+每個 Node 是 `nodes/<node_id>/run.py`，透過 `--args-json` 接收固定格式 JSON payload，結果輸出到 stdout。
+
+### 固定 Node Input Contract
+
+`run.py`、`pre_hook.py` 都會收到同一個 payload：
+
+```json
+{
+  "message": "人類可讀任務描述，可為空",
+  "args": {
+    "node_specific_key": "value"
+  },
+  "metadata": {
+    "trigger": "discord | cron | workflow | debug"
+  },
+  "channel_id": "Discord channel id，可為空",
+  "image_paths": [],
+  "prev_output": "上一個 node 的 output_text，只有接力時才有",
+  "recent_context": "最近對話脈絡，可能不存在",
+  "next_nodes": [{"id": "...", "name": "...", "description": "..."}],
+  "model_name": "模型名稱，可能不存在",
+  "node_prompt_path": "node.md 路徑，可能不存在"
+}
+```
+
+規則：
+- node-specific input 一律從 `payload["args"]` 讀，例如 `args["url"]`、`args["source"]`、`args["target_date"]`。
+- `message` 只放人類可讀指令，不要把它當作唯一 structured input。
+- 若要相容舊資料，可以 fallback 讀 top-level 同名欄位，但新程式碼必須優先讀 `args`。
+- 不要自行改寫 `prev_output`、`next_nodes`、`model_name`、`node_prompt_path`；這些是 engine-managed 欄位。
+- cron replay 時只保證 `message`、`args`、`metadata`、`channel_id` 存在；所以可重播任務必須把必要參數存在 `args`。
 
 ### 標準 run.py 骨架
 
@@ -111,6 +141,11 @@ def main() -> int:
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
     message = str(payload.get("message", "")).strip()
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
+    # node-specific values come from args first
+    url = str(args.get("url") or payload.get("url", "")).strip()
     # ... 你的邏輯 ...
     print(json.dumps({"kind": "reply", "reply": "..."}, ensure_ascii=False))
     return 0
@@ -122,6 +157,8 @@ if __name__ == "__main__":
 ### Engine 自動注入的參數
 
 - `message`: 使用者訊息
+- `args`: node-specific structured input；新 node 必須優先讀這裡
+- `metadata`: trigger/job/source 等非業務資料；cron 會放 `trigger=cron`、`job_id`、`job_name`
 - `model_name`: 模型名稱（來自 DB）
 - `node_prompt_path`: 節點 prompt 路徑（來自 DB，指向 node.md）
 - `prev_output`: 前一個 node 的輸出（若 use_prev_output=true）
@@ -131,7 +168,11 @@ if __name__ == "__main__":
 - `image_paths`: Discord 圖片附件下載後的本機路徑清單，最多 5 張；包含觸發訊息與被 reply 訊息中的圖片
 - 若最終回覆要發到其他 Discord channel，可在 final reply JSON 或 `kind=reply` 的 `metadata` 放 `target_channel_id`；預設不放時會回到觸發訊息的 channel。只能使用使用者明確提供的 channel mention/id，不要猜 channel id。
 
-### 輸出格式
+### 固定 Node Output Contract
+
+stdout 必須是單一 JSON object envelope；不要輸出 debug log、markdown code fence 或多段文字。
+
+目前支援三種 stdout envelope：
 
 **直接回覆 (tool node，不呼叫 LLM)：**
 ```python
@@ -168,6 +209,13 @@ print(json.dumps({
     "metadata": {},
 }, ensure_ascii=False))
 ```
+
+補充：
+- `kind="reply"`：engine 直接使用 `reply` 作為 output_text；若有 successor，該文字會成為下游 `prev_output`。
+- `kind="infer"` + `response_mode="decision"`：engine 呼叫 LLM，LLM 必須輸出 decision JSON，例如 `{"decision":"reply","reply":"..."}` 或 `{"decision":"use_next_node","next_node_id":"...","args":{...}}`。
+- `kind="infer"` + `response_mode="passthrough"`：engine 呼叫 LLM，LLM 文字結果就是 output_text。
+- `metadata.target_channel_id` 可用於 delivery routing；錯誤或缺參數時不要帶 target channel。
+- 非 0 returncode 會被 engine 包成「節點執行失敗」訊息；使用者可修正的缺輸入/外部失敗應回 `kind="reply"`，不要 raise。
 
 ### Pre / Post Hook（選用）
 
