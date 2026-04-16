@@ -293,6 +293,210 @@ html, body {
 
 .cron-modal-box { width: min(560px, calc(100vw - 32px)); }
 
+.modal-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.modal-title-row h3 {
+  margin-bottom: 0;
+}
+
+.info-tip {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.info-tip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--nord2);
+  border: 1px solid var(--border);
+  color: var(--nord8);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: help;
+}
+
+.info-tip-panel {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  z-index: 30;
+  display: none;
+  width: min(460px, calc(100vw - 56px));
+  max-height: min(560px, calc(100vh - 120px));
+  overflow: auto;
+  background: var(--nord0);
+  border: 1px solid var(--nord9);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+  padding: 12px;
+  color: var(--nord5);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.info-tip:hover .info-tip-panel,
+.info-tip:focus-within .info-tip-panel {
+  display: block;
+}
+
+.info-tip-panel p {
+  margin: 6px 0 10px;
+  color: var(--muted);
+}
+
+.info-tip-panel pre {
+  white-space: pre-wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  color: var(--nord6);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* ── Trace page ── */
+#page-trace {
+  background: var(--bg);
+}
+
+#trace-shell {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  width: 100%;
+  min-height: 0;
+}
+
+#trace-sidebar {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+.trace-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+#trace-run-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.trace-run-item {
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid rgba(76, 86, 106, 0.7);
+  background: transparent;
+  color: var(--nord5);
+  padding: 10px 12px;
+  cursor: pointer;
+  font-family: var(--font);
+}
+
+.trace-run-item:hover,
+.trace-run-item.active {
+  background: rgba(129, 161, 193, 0.12);
+}
+
+.trace-run-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.trace-run-meta,
+.trace-run-message {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#trace-detail {
+  overflow-y: auto;
+  padding: 18px 22px;
+}
+
+#trace-run-summary {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+}
+
+.trace-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px 14px;
+  font-size: 12px;
+}
+
+.trace-node {
+  border-bottom: 1px solid var(--border);
+  padding: 14px 0;
+}
+
+.trace-node h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--nord6);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.trace-json-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.trace-json-box label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 5px;
+}
+
+.trace-json-box pre {
+  max-height: 420px;
+  overflow: auto;
+  background: var(--nord0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  color: var(--nord5);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.trace-error {
+  margin: 8px 0 12px;
+  background: rgba(191, 97, 106, 0.12);
+  border: 1px solid rgba(191, 97, 106, 0.45);
+  border-radius: var(--radius);
+  color: var(--nord5);
+  padding: 9px 10px;
+  white-space: pre-wrap;
+}
+
 .hint-box {
   margin-top: 10px;
   padding: 10px;
@@ -735,7 +939,8 @@ code {
   word-break: break-all;
 }
 
-.muted { color: var(--muted); }
+.muted,
+.dim { color: var(--muted); }
 
 /* ── Forms ── */
 .field-label {

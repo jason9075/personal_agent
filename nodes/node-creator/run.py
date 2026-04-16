@@ -21,7 +21,10 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
-    message = str(payload.get("message", "")).strip()
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
+    message = str(args.get("message") or payload.get("message", "")).strip()
     recent_context = str(payload.get("recent_context", "")).strip()
 
     db_path = REPO_ROOT / "db" / "workflow.sqlite3"

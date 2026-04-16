@@ -17,8 +17,11 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
-    message = str(payload.get("message", "")).strip()
-    prev_output = str(payload.get("prev_output", "")).strip()
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
+    message = str(args.get("message") or payload.get("message", "")).strip()
+    prev_output = str(args.get("fetched_content") or args.get("content") or payload.get("prev_output", "")).strip()
 
     if not prev_output:
         print(json.dumps({"kind": "reply", "reply": "沒有收到網頁內容，請先提供網址。"}, ensure_ascii=False))

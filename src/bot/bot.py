@@ -14,12 +14,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .config import ALLOWED_USER_ID, BOT_LOG_DIR, SCHEDULE_DB_PATH, WEB_PORT, WORKFLOW_DB_PATH  # noqa: E402
+from .config import ALLOWED_USER_ID, BOT_LOG_DIR, SCHEDULE_DB_PATH, WEB_PORT, WORKFLOW_DB_PATH, WORKFLOW_TRACE_DB_PATH  # noqa: E402
 from .engine import execute_workflow  # noqa: E402
 from .logging_utils import get_logger, setup_logging  # noqa: E402
 from .schedule_db import ensure_db  # noqa: E402
 from .scheduler import FinanceScheduler  # noqa: E402
 from .workflow_db import ensure_workflow_db  # noqa: E402
+from .workflow_trace_db import ensure_trace_db  # noqa: E402
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -36,6 +37,7 @@ logger = get_logger()
 async def on_ready() -> None:
     ensure_db(SCHEDULE_DB_PATH)
     ensure_workflow_db(WORKFLOW_DB_PATH)
+    ensure_trace_db(WORKFLOW_TRACE_DB_PATH)
     scheduler.start()
     logger.info("Logged in as %s", client.user)
 
@@ -307,7 +309,7 @@ async def _run(token: str) -> None:
     """Run Discord bot and FastAPI web server in the same asyncio event loop."""
     from ..web.app import create_app
 
-    web_app = create_app(WORKFLOW_DB_PATH, SCHEDULE_DB_PATH, scheduler=scheduler)
+    web_app = create_app(WORKFLOW_DB_PATH, SCHEDULE_DB_PATH, WORKFLOW_TRACE_DB_PATH, scheduler=scheduler)
     uvicorn_config = uvicorn.Config(
         web_app,
         host="0.0.0.0",

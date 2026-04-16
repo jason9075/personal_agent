@@ -14,6 +14,9 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
 
     node_dir = Path(__file__).resolve().parent
     report_node_dir = node_dir.parent / "finance-report"
@@ -23,10 +26,13 @@ def main() -> int:
     from impl.config import list_available_sources, match_source_from_text
 
     message = str(payload.get("message", "")).strip()
-    explicit_source = str(payload.get("source", "")).strip()
-    explicit_target_date = str(payload.get("target_date", "")).strip()
-    workers = int(payload.get("workers", 4) or 4)
-    channel_id = os.getenv("FINANCE_REPORT_CHANNEL_ID", "").strip() or str(payload.get("channel_id", "")).strip()
+    explicit_source = str(args.get("source") or payload.get("source", "")).strip()
+    explicit_target_date = str(args.get("target_date") or payload.get("target_date", "")).strip()
+    workers = int(args.get("workers") or payload.get("workers", 4) or 4)
+    channel_id = (
+        os.getenv("FINANCE_REPORT_CHANNEL_ID", "").strip()
+        or str(args.get("channel_id") or args.get("channel") or payload.get("channel_id", "")).strip()
+    )
 
     if workers <= 0:
         raise SystemExit("workers must be a positive integer")
@@ -51,7 +57,7 @@ def main() -> int:
     if workers:
         default_args["workers"] = workers
     if channel_id:
-        default_args["channel"] = channel_id
+        default_args["channel_id"] = channel_id
 
     run_output = json.dumps(
         {

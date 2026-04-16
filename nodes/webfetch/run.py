@@ -60,11 +60,16 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
     message = str(payload.get("message", "")).strip()
     prev_output = str(payload.get("prev_output", "")).strip()
+    explicit_url = str(args.get("url") or payload.get("url", "")).strip()
+    args_message = str(args.get("message", "")).strip()
 
     # Extract URL — user message takes priority over prev_output
-    url = _extract_url(message) or _extract_url(prev_output)
+    url = _extract_url(explicit_url) or _extract_url(args_message) or _extract_url(message) or _extract_url(prev_output)
     if not url:
         print(json.dumps({"kind": "reply", "reply": "請提供要抓取的網址（https://...）。"}, ensure_ascii=False))
         return 0

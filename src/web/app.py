@@ -36,6 +36,13 @@ from ..bot.workflow_db import (
     upsert_edge,
     upsert_node,
 )
+from ..bot.workflow_trace_db import (
+    WorkflowNodeLog,
+    WorkflowRunLog,
+    get_run as get_trace_run,
+    list_node_logs,
+    list_runs as list_trace_runs,
+)
 
 _THIS_DIR = Path(__file__).resolve().parent
 _DEBUG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="debug_chat")
@@ -47,10 +54,12 @@ _REPO_ROOT = _THIS_DIR.parents[1]
 def create_app(
     workflow_db_path: Path,
     schedule_db_path: Path,
+    trace_db_path: Path | None = None,
     scheduler: FinanceScheduler | None = None,
 ) -> FastAPI:
     app = FastAPI(title="personal_agent workflow", docs_url="/docs")
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+    workflow_trace_db_path = trace_db_path or schedule_db_path.with_name("workflow_trace.sqlite3")
 
     @app.middleware("http")
     async def disable_cache(request: Request, call_next):  # type: ignore[unused-ignore]
@@ -270,6 +279,21 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
         return JSONResponse({"reply": reply, "node_trace": node_trace})
 
+    @app.get("/api/traces/runs")
+    async def trace_runs_endpoint(limit: int = 100) -> JSONResponse:
+        bounded_limit = max(1, min(int(limit), 500))
+        return JSONResponse([_trace_run_to_dict(run) for run in list_trace_runs(workflow_trace_db_path, limit=bounded_limit)])
+
+    @app.get("/api/traces/runs/{run_id}")
+    async def trace_run_endpoint(run_id: int) -> JSONResponse:
+        run = get_trace_run(workflow_trace_db_path, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"trace run {run_id} not found")
+        return JSONResponse({
+            "run": _trace_run_to_dict(run),
+            "nodes": [_trace_node_to_dict(node) for node in list_node_logs(workflow_trace_db_path, run_id)],
+        })
+
     @app.post("/api/node-details-preview")
     async def node_details_preview_endpoint(body: dict[str, Any]) -> JSONResponse:
         node = WorkflowNode(
@@ -345,6 +369,45 @@ def _validate_schedule_start_node(workflow_db_path: Path, start_node_id: str) ->
         raise HTTPException(status_code=422, detail=f"start node '{start_node_id}' not found")
     if not node.enabled:
         raise HTTPException(status_code=422, detail=f"start node '{start_node_id}' is disabled")
+
+
+def _trace_run_to_dict(run: WorkflowRunLog) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "status": run.status,
+        "start_node_id": run.start_node_id,
+        "trigger": run.trigger,
+        "channel_id": run.channel_id,
+        "message": run.message,
+        "error": run.error,
+        "node_count": run.node_count,
+    }
+
+
+def _trace_node_to_dict(node: WorkflowNodeLog) -> dict[str, Any]:
+    return {
+        "id": node.id,
+        "run_id": node.run_id,
+        "seq": node.seq,
+        "node_id": node.node_id,
+        "status": node.status,
+        "started_at": node.started_at,
+        "finished_at": node.finished_at,
+        "input": _parse_trace_json(node.input_json),
+        "output": _parse_trace_json(node.output_json),
+        "input_json": node.input_json,
+        "output_json": node.output_json,
+        "error": node.error,
+    }
+
+
+def _parse_trace_json(raw_json: str) -> Any:
+    try:
+        return json.loads(raw_json)
+    except json.JSONDecodeError:
+        return raw_json
 
 
 def _nullable_str(value: Any) -> str | None:

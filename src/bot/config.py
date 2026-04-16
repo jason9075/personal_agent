@@ -22,5 +22,6 @@ NODES_DIR = Path(__file__).resolve().parents[2] / "nodes"
 ENGINE_SYSTEM_PROMPT_PATH = Path(__file__).resolve().with_name("engine_system_prompt.md")
 SCHEDULE_DB_PATH = Path(__file__).resolve().parents[2] / "db" / "bot_scheduler.sqlite3"
 WORKFLOW_DB_PATH = Path(__file__).resolve().parents[2] / "db" / "workflow.sqlite3"
+WORKFLOW_TRACE_DB_PATH = Path(__file__).resolve().parents[2] / "db" / "workflow_trace.sqlite3"
 BOT_LOG_DIR = Path(_optional_env("BOT_LOG_DIR", ".local/bot/logs"))
 WEB_PORT = int(_optional_env("WEB_PORT", "8765"))

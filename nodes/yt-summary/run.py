@@ -17,13 +17,16 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
-    message = str(payload.get("message", "")).strip()
-    prev_output = str(payload.get("prev_output", "")).strip()
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
+    message = str(args.get("message") or payload.get("message", "")).strip()
+    prev_output = str(args.get("transcript") or payload.get("prev_output", "")).strip()
     metadata = payload.get("metadata", {})
     if not isinstance(metadata, dict):
         metadata = {}
-    audio_duration = str(metadata.get("audio_duration", "")).strip()
-    audio_duration_seconds = str(metadata.get("audio_duration_seconds", "")).strip()
+    audio_duration = str(args.get("audio_duration") or metadata.get("audio_duration", "")).strip()
+    audio_duration_seconds = str(args.get("audio_duration_seconds") or metadata.get("audio_duration_seconds", "")).strip()
 
     if not prev_output:
         print(json.dumps({"kind": "reply", "reply": "沒有收到逐字稿，請先提供 YouTube 網址。"}, ensure_ascii=False))

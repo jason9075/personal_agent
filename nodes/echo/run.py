@@ -17,7 +17,16 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
-    text = str(payload.get("text", "")).strip()
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
+    text = str(
+        payload.get("text")
+        or args.get("text")
+        or args.get("message")
+        or payload.get("message")
+        or ""
+    ).strip()
     if not text:
         print("(empty echo)", file=sys.stderr)
         return 1

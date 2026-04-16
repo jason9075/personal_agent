@@ -36,10 +36,15 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
     message = str(payload.get("message", "")).strip()
     prev_output = str(payload.get("prev_output", "")).strip()
+    explicit_url = str(args.get("url") or args.get("video_url") or payload.get("url", "")).strip()
+    args_message = str(args.get("message", "")).strip()
 
-    match = _YT_URL_RE.search(message) or _YT_URL_RE.search(prev_output)
+    match = _YT_URL_RE.search(explicit_url) or _YT_URL_RE.search(args_message) or _YT_URL_RE.search(message) or _YT_URL_RE.search(prev_output)
     if not match:
         print(json.dumps({"kind": "reply", "reply": "請提供 YouTube 網址。"}, ensure_ascii=False))
         return 0

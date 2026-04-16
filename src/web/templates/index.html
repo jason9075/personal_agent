@@ -24,6 +24,10 @@
       <span class="nav-icon">⏰</span>
       <span class="nav-label">Cron</span>
     </button>
+    <button class="nav-item" data-page="trace">
+      <span class="nav-icon">▤</span>
+      <span class="nav-label">Trace</span>
+    </button>
     <button class="nav-item" data-page="debug">
       <span class="nav-icon">🐛</span>
       <span class="nav-label">Debug</span>
@@ -155,6 +159,27 @@
             <tbody id="cron-table-body"></tbody>
           </table>
           <div id="cron-empty" class="cron-empty hidden">No scheduled jobs yet. Click <strong>+ Job</strong> to create one.</div>
+        </div>
+      </div>
+    </div>
+    <!-- Trace Page -->
+    <div id="page-trace" class="page hidden">
+      <div id="trace-shell">
+        <div id="trace-sidebar">
+          <div class="trace-toolbar">
+            <button id="btn-reload-traces" class="btn btn-ghost">↺ Reload</button>
+          </div>
+          <div id="trace-run-list"></div>
+          <div id="trace-empty" class="cron-empty hidden">No workflow traces yet.</div>
+        </div>
+        <div id="trace-detail">
+          <div id="trace-detail-empty" class="panel-hint">
+            <p>Select a workflow run to inspect node input and output JSON.</p>
+          </div>
+          <div id="trace-detail-content" class="hidden">
+            <div id="trace-run-summary"></div>
+            <div id="trace-node-list"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -306,7 +331,30 @@
 <!-- Cron Job Modal -->
 <div id="cron-modal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-box cron-modal-box">
-    <h3 id="cron-modal-title">Add Job</h3>
+    <div class="modal-title-row">
+      <h3 id="cron-modal-title">Add Job</h3>
+      <div class="info-tip" tabindex="0" aria-label="Cron input examples">
+        <span class="info-tip-icon">i</span>
+        <div class="info-tip-panel" role="tooltip">
+          <strong>Input format</strong>
+          <p>Message is <code>input_json.message</code>. Args JSON is only <code>input_json.args</code>.</p>
+          <pre>echo:
+{"text":"hello"}
+
+finance-report:
+{"source":"youtinghao","workers":4}
+
+finance-report with date:
+{"source":"youtinghao","target_date":"2026-04-16","workers":4}
+
+webfetch:
+{"url":"https://example.com/article"}
+
+yt-fetch:
+{"url":"https://www.youtube.com/watch?v=XXXXXXXXXXX"}</pre>
+        </div>
+      </div>
+    </div>
 
     <label class="field-label">Name</label>
     <input type="text" id="cj-name" spellcheck="false">

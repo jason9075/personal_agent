@@ -26,11 +26,14 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
     prev_output = str(payload.get("prev_output", "")).strip()
     prev_payload = _parse_prev_output(prev_output)
-    source = str(payload.get("source") or prev_payload.get("source", "")).strip()
-    target_date_str = str(payload.get("target_date") or prev_payload.get("target_date", "")).strip()
-    workers = int(payload.get("workers") or prev_payload.get("workers", 4) or 4)
+    source = str(args.get("source") or payload.get("source") or prev_payload.get("source", "")).strip()
+    target_date_str = str(args.get("target_date") or payload.get("target_date") or prev_payload.get("target_date", "")).strip()
+    workers = int(args.get("workers") or payload.get("workers") or prev_payload.get("workers", 4) or 4)
     if workers <= 0:
         workers = 1
 

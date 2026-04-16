@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from .llm import LlmRequest, parse_json_response, run_codex_request, unwrap_deci
 from .logging_utils import get_logger
 from .nodes import NodeActionResult, format_direct_node_reply, parse_llm_envelope
 from .workflow_db import WorkflowGraph, WorkflowNode, load_workflow_graph
+from .workflow_trace_db import create_run, finish_run, log_node
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ class NodeDecision:
 class NodeExecutionResult:
     node_id: str
     output_text: str
+    input_payload: dict[str, Any] = field(default_factory=dict)
     action_result: NodeActionResult | None = None
     decision: NodeDecision | None = None
 
@@ -50,6 +53,7 @@ def execute_workflow(
     image_paths: list[str] | None = None,
     node_trace: list[str] | None = None,
     response_metadata: dict[str, str] | None = None,
+    trace_db_path: Path | None = None,
 ) -> str:
     """Execute the configured workflow from the requested node or the DB start node.
 
@@ -75,9 +79,25 @@ def execute_workflow(
     if current is None:
         raise RuntimeError("workflow has no enabled start_node")
 
+    trace_path = trace_db_path or (repo_root / "db" / "workflow_trace.sqlite3")
     user_msg = workflow_request.message
     workflow_image_paths = list(workflow_request.image_paths)
     workflow_metadata = dict(workflow_request.metadata)
+    trace_run_id = create_run(
+        trace_path,
+        start_node_id=current.id,
+        trigger=workflow_metadata.get("trigger", "workflow"),
+        channel_id=workflow_request.channel_id,
+        message=user_msg,
+        request={
+            "message": user_msg,
+            "start_node_id": workflow_request.start_node_id,
+            "channel_id": workflow_request.channel_id,
+            "image_paths": workflow_image_paths,
+            "args": workflow_request.args,
+            "metadata": workflow_metadata,
+        },
+    )
     current_input: dict = _build_node_input(
         message=user_msg,
         channel_id=workflow_request.channel_id,
@@ -86,72 +106,112 @@ def execute_workflow(
         metadata=workflow_metadata,
     )
     prev_output = ""
+    node_seq = 0
 
-    while current:
-        logger.info("Executing node id=%s model=%s", current.id, current.model_name or "—")
-        if node_trace is not None:
-            node_trace.append(current.id)
-        result = _execute_node(
-            current,
-            graph,
-            user_msg,
-            current_input,
-            prev_output,
-            repo_root,
-            recent_context=recent_context,
-            image_paths=workflow_image_paths,
-        )
+    try:
+        while current:
+            node_seq += 1
+            node_started_at = _trace_now()
+            logger.info("Executing node id=%s model=%s", current.id, current.model_name or "—")
+            if node_trace is not None:
+                node_trace.append(current.id)
+            try:
+                result = _execute_node(
+                    current,
+                    graph,
+                    user_msg,
+                    current_input,
+                    prev_output,
+                    repo_root,
+                    recent_context=recent_context,
+                    image_paths=workflow_image_paths,
+                )
+            except Exception as exc:
+                log_node(
+                    trace_path,
+                    run_id=trace_run_id,
+                    seq=node_seq,
+                    node_id=current.id,
+                    status="error",
+                    started_at=node_started_at,
+                    input_payload=current_input,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise
 
-        if result.decision is not None:
-            if result.decision.decision == "reply":
-                reply = result.decision.reply.strip() or "目前沒有可回覆的內容。"
-                logger.info("Decision node %s replied directly output_len=%s", current.id, len(reply))
-                _set_response_metadata(response_metadata, target_channel_id=result.decision.target_channel_id)
+            log_node(
+                trace_path,
+                run_id=trace_run_id,
+                seq=node_seq,
+                node_id=current.id,
+                status="ok",
+                started_at=node_started_at,
+                input_payload=result.input_payload,
+                output_payload=_trace_node_output(result),
+            )
+
+            if result.decision is not None:
+                if result.decision.decision == "reply":
+                    reply = result.decision.reply.strip() or "目前沒有可回覆的內容。"
+                    logger.info("Decision node %s replied directly output_len=%s", current.id, len(reply))
+                    _set_response_metadata(response_metadata, target_channel_id=result.decision.target_channel_id)
+                    finish_run(trace_path, trace_run_id, status="ok", final_output={"reply": reply})
+                    return reply
+
+                next_node = graph.node_by_id(result.decision.next_node_id)
+                if next_node is None or not next_node.enabled:
+                    raise RuntimeError(f"node '{current.id}' selected unknown or disabled next node '{result.decision.next_node_id}'")
+                if next_node.id not in {candidate.id for candidate in graph.candidate_targets(current.id)}:
+                    raise RuntimeError(f"node '{current.id}' selected unreachable next node '{next_node.id}'")
+
+                prev_output = result.output_text
+                current_input = _build_node_input(
+                    message=user_msg,
+                    channel_id=workflow_request.channel_id,
+                    image_paths=workflow_image_paths,
+                    args=result.decision.args,
+                    metadata=workflow_metadata,
+                )
+                current = next_node
+                continue
+
+            next_node = _first_enabled_successor(graph, current.id)
+            if next_node is None:
+                logger.info("Node %s has no matching successor; returning direct output", current.id)
+                reply, target_channel_id = _extract_delivery_response(result.output_text)
+                if not target_channel_id:
+                    target_channel_id = _target_channel_from_action_result(result.action_result)
+                _set_response_metadata(response_metadata, target_channel_id=target_channel_id)
+                finish_run(trace_path, trace_run_id, status="ok", final_output={"reply": reply})
                 return reply
-
-            next_node = graph.node_by_id(result.decision.next_node_id)
-            if next_node is None or not next_node.enabled:
-                raise RuntimeError(f"node '{current.id}' selected unknown or disabled next node '{result.decision.next_node_id}'")
-            if next_node.id not in {candidate.id for candidate in graph.candidate_targets(current.id)}:
-                raise RuntimeError(f"node '{current.id}' selected unreachable next node '{next_node.id}'")
-
             prev_output = result.output_text
             current_input = _build_node_input(
                 message=user_msg,
                 channel_id=workflow_request.channel_id,
                 image_paths=workflow_image_paths,
-                args=result.decision.args,
+                args={},
                 metadata=workflow_metadata,
+                prev_output=prev_output,
             )
+            reply_metadata = _direct_reply_metadata(result.action_result)
+            if reply_metadata:
+                current_metadata = current_input.get("metadata", {})
+                if not isinstance(current_metadata, dict):
+                    current_metadata = {}
+                current_input["metadata"] = {**current_metadata, **reply_metadata}
             current = next_node
-            continue
 
-        next_node = _first_enabled_successor(graph, current.id)
-        if next_node is None:
-            logger.info("Node %s has no matching successor; returning direct output", current.id)
-            reply, target_channel_id = _extract_delivery_response(result.output_text)
-            if not target_channel_id:
-                target_channel_id = _target_channel_from_action_result(result.action_result)
-            _set_response_metadata(response_metadata, target_channel_id=target_channel_id)
-            return reply
-        prev_output = result.output_text
-        current_input = _build_node_input(
-            message=user_msg,
-            channel_id=workflow_request.channel_id,
-            image_paths=workflow_image_paths,
-            args={},
-            metadata=workflow_metadata,
-            prev_output=prev_output,
+        reply = "目前沒有可執行的節點。"
+        finish_run(trace_path, trace_run_id, status="ok", final_output={"reply": reply})
+        return reply
+    except Exception as exc:
+        finish_run(
+            trace_path,
+            trace_run_id,
+            status="error",
+            error=f"{type(exc).__name__}: {exc}",
         )
-        reply_metadata = _direct_reply_metadata(result.action_result)
-        if reply_metadata:
-            current_metadata = current_input.get("metadata", {})
-            if not isinstance(current_metadata, dict):
-                current_metadata = {}
-            current_input["metadata"] = {**current_metadata, **reply_metadata}
-        current = next_node
-
-    return "目前沒有可執行的節點。"
+        raise
 
 
 def _execute_node(
@@ -253,6 +313,7 @@ def _execute_node(
     return NodeExecutionResult(
         node_id=node.id,
         output_text=output_text,
+        input_payload=payload,
         action_result=action_result,
         decision=decision,
     )
@@ -523,6 +584,33 @@ def _build_node_input(
     for key, value in args.items():
         payload.setdefault(str(key), value)
     return payload
+
+
+def _trace_node_output(result: NodeExecutionResult) -> dict[str, Any]:
+    output: dict[str, Any] = {
+        "node_id": result.node_id,
+        "output_text": result.output_text,
+    }
+    if result.action_result is not None:
+        output["action_result"] = {
+            "returncode": result.action_result.returncode,
+            "stdout": result.action_result.stdout,
+            "stderr": result.action_result.stderr,
+            "args": result.action_result.args,
+        }
+    if result.decision is not None:
+        output["decision"] = {
+            "decision": result.decision.decision,
+            "reply": result.decision.reply,
+            "next_node_id": result.decision.next_node_id,
+            "args": result.decision.args,
+            "target_channel_id": result.decision.target_channel_id,
+        }
+    return output
+
+
+def _trace_now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def _first_enabled_successor(

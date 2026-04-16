@@ -949,7 +949,7 @@ document.getElementById('engine-prompt-modal').addEventListener('click', event =
 
 // ── Nav ──────────────────────────────────────────────────────────────────────
 
-const PAGES = ['dag', 'cron', 'debug'];
+const PAGES = ['dag', 'cron', 'trace', 'debug'];
 
 function switchPage(pageId) {
   PAGES.forEach(id => {
@@ -958,6 +958,7 @@ function switchPage(pageId) {
   });
 
   if (pageId === 'cron') loadCronJobs();
+  if (pageId === 'trace') loadTraceRuns();
   if (pageId === 'dag') fitCanvas();
 }
 
@@ -1164,6 +1165,102 @@ document.getElementById('cron-modal').addEventListener('click', event => {
   if (event.target === event.currentTarget) {
     document.getElementById('cron-modal').classList.add('hidden');
   }
+});
+
+// ── Workflow Trace ───────────────────────────────────────────────────────────
+
+let selectedTraceRunId = null;
+
+async function loadTraceRuns() {
+  try {
+    const runs = await GET('/api/traces/runs?limit=100');
+    renderTraceRuns(runs);
+  } catch (err) {
+    toast(`Failed to load traces: ${err.message}`, 'err');
+  }
+}
+
+function renderTraceRuns(runs) {
+  const list = document.getElementById('trace-run-list');
+  const empty = document.getElementById('trace-empty');
+  if (!runs.length) {
+    list.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  list.innerHTML = runs.map(run => {
+    const statusClass = run.status === 'ok' ? 'status-ok' : run.status === 'error' ? 'status-err' : '';
+    const active = run.id === selectedTraceRunId ? ' active' : '';
+    const message = run.message || '(empty)';
+    return `<button class="trace-run-item${active}" onclick="openTraceRun(${run.id})">
+      <div class="trace-run-title">
+        <span class="mono">#${run.id}</span>
+        <span class="${statusClass}">${escapeHtml(run.status)}</span>
+        <span>${escapeHtml(run.start_node_id || '—')}</span>
+      </div>
+      <div class="trace-run-meta">${escapeHtml(run.started_at || '—')} · ${escapeHtml(run.trigger || 'workflow')} · ${run.node_count} nodes</div>
+      <div class="trace-run-message">${escapeHtml(message)}</div>
+    </button>`;
+  }).join('');
+}
+
+async function openTraceRun(runId) {
+  selectedTraceRunId = runId;
+  try {
+    const data = await GET(`/api/traces/runs/${runId}`);
+    renderTraceRunDetail(data.run, data.nodes || []);
+    await loadTraceRuns();
+  } catch (err) {
+    toast(`Failed to load trace: ${err.message}`, 'err');
+  }
+}
+
+function renderTraceRunDetail(run, nodes) {
+  document.getElementById('trace-detail-empty').classList.add('hidden');
+  document.getElementById('trace-detail-content').classList.remove('hidden');
+  document.getElementById('trace-run-summary').innerHTML = `
+    <div class="trace-summary-grid">
+      <div><span class="muted">Run</span><br><code>#${run.id}</code></div>
+      <div><span class="muted">Status</span><br><span class="${run.status === 'ok' ? 'status-ok' : run.status === 'error' ? 'status-err' : ''}">${escapeHtml(run.status)}</span></div>
+      <div><span class="muted">Start Node</span><br><code>${escapeHtml(run.start_node_id || '—')}</code></div>
+      <div><span class="muted">Trigger</span><br>${escapeHtml(run.trigger || 'workflow')}</div>
+      <div><span class="muted">Started</span><br>${escapeHtml(run.started_at || '—')}</div>
+      <div><span class="muted">Finished</span><br>${escapeHtml(run.finished_at || '—')}</div>
+      <div><span class="muted">Channel</span><br><code>${escapeHtml(run.channel_id || '—')}</code></div>
+      <div><span class="muted">Nodes</span><br>${nodes.length}</div>
+    </div>
+    ${run.error ? `<pre class="trace-error">${escapeHtml(run.error)}</pre>` : ''}
+  `;
+  document.getElementById('trace-node-list').innerHTML = nodes.map(node => renderTraceNode(node)).join('');
+}
+
+function renderTraceNode(node) {
+  const statusClass = node.status === 'ok' ? 'status-ok' : node.status === 'error' ? 'status-err' : '';
+  return `<section class="trace-node">
+    <h4><span class="dim">#${node.seq}</span> <code>${escapeHtml(node.node_id)}</code> <span class="${statusClass}">${escapeHtml(node.status)}</span></h4>
+    ${node.error ? `<pre class="trace-error">${escapeHtml(node.error)}</pre>` : ''}
+    <div class="trace-json-grid">
+      <div class="trace-json-box">
+        <label>Input JSON</label>
+        <pre>${escapeHtml(formatJson(node.input))}</pre>
+      </div>
+      <div class="trace-json-box">
+        <label>Output JSON</label>
+        <pre>${escapeHtml(formatJson(node.output))}</pre>
+      </div>
+    </div>
+  </section>`;
+}
+
+function formatJson(value) {
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value ?? {}, null, 2);
+}
+
+document.getElementById('btn-reload-traces').addEventListener('click', async () => {
+  await loadTraceRuns();
+  toast('Reloaded');
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────

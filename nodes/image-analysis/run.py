@@ -19,8 +19,11 @@ def main() -> int:
 
     idx = sys.argv.index("--args-json")
     payload: dict = json.loads(sys.argv[idx + 1])
-    message = str(payload.get("message", "")).strip()
-    image_paths = _valid_image_paths(payload.get("image_paths", []))
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
+    message = str(args.get("message") or payload.get("message", "")).strip()
+    image_paths = _valid_image_paths(args.get("image_paths") or payload.get("image_paths", []))
 
     if not image_paths:
         print(json.dumps({"kind": "reply", "reply": "沒有收到可分析的圖片。"}, ensure_ascii=False))

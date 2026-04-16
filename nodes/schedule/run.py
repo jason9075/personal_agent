@@ -17,6 +17,9 @@ def main() -> int:
     if "--args-json" in sys.argv:
         idx = sys.argv.index("--args-json")
         payload: dict[str, object] = json.loads(sys.argv[idx + 1])
+        node_args = payload.get("args", {})
+        if isinstance(node_args, dict):
+            payload = {**payload, **{str(key): value for key, value in node_args.items()}}
     else:
         parser = argparse.ArgumentParser()
         parser.add_argument("--action", default="list")
