@@ -183,6 +183,7 @@ def create_app(
                 input_json=_input_json_from_body(body),
                 channel_id=str(body.get("channel_id", "")),
                 run_once=bool(body.get("run_once", False)),
+                notify_before_run=bool(body.get("notify_before_run", True)),
             )
         except KeyError as exc:
             raise HTTPException(status_code=422, detail=f"missing field: {exc}")
@@ -211,6 +212,7 @@ def create_app(
                 channel_id=str(body["channel_id"]) if "channel_id" in body else None,
                 enabled=bool(body["enabled"]) if "enabled" in body else None,
                 run_once=bool(body["run_once"]) if "run_once" in body else None,
+                notify_before_run=bool(body["notify_before_run"]) if "notify_before_run" in body else None,
             )
         except RuntimeError as exc:
             detail = str(exc)
@@ -343,6 +345,7 @@ def _job_to_dict(job: ScheduledJob) -> dict[str, Any]:
         "channel_id": job.channel_id,
         "enabled": job.enabled,
         "run_once": job.run_once,
+        "notify_before_run": job.notify_before_run,
         "last_run_at": job.last_run_at,
         "last_status": job.last_status,
         "last_message": job.last_message,

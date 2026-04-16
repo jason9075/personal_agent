@@ -18,6 +18,7 @@ class ScheduledJob:
     channel_id: str
     enabled: bool
     run_once: bool
+    notify_before_run: bool
     last_run_at: str
     last_status: str
     last_message: str
@@ -32,6 +33,7 @@ _EXPECTED_COLUMNS = {
     "channel_id",
     "enabled",
     "run_once",
+    "notify_before_run",
     "last_run_at",
     "last_status",
     "last_message",
@@ -55,6 +57,7 @@ def ensure_db(db_path: Path) -> None:
                 channel_id TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 run_once INTEGER NOT NULL DEFAULT 0,
+                notify_before_run INTEGER NOT NULL DEFAULT 1,
                 last_run_at TEXT NOT NULL DEFAULT '',
                 last_status TEXT NOT NULL DEFAULT '',
                 last_message TEXT NOT NULL DEFAULT ''
@@ -70,7 +73,7 @@ def list_jobs(db_path: Path) -> list[ScheduledJob]:
         rows = conn.execute(
             """
             SELECT id, name, cron_expr, start_node_id, input_json, channel_id, enabled, run_once,
-                   last_run_at, last_status, last_message
+                   notify_before_run, last_run_at, last_status, last_message
             FROM scheduled_jobs
             ORDER BY id ASC
             """
@@ -87,6 +90,7 @@ def create_job(
     input_json: str | dict[str, Any] = "{}",
     channel_id: str = "",
     run_once: bool = False,
+    notify_before_run: bool = True,
 ) -> ScheduledJob:
     ensure_db(db_path)
     normalized_input_json = normalize_input_json(input_json)
@@ -94,8 +98,8 @@ def create_job(
         cursor = conn.execute(
             """
             INSERT INTO scheduled_jobs
-                (name, cron_expr, start_node_id, input_json, channel_id, enabled, run_once)
-            VALUES (?, ?, ?, ?, ?, 1, ?)
+                (name, cron_expr, start_node_id, input_json, channel_id, enabled, run_once, notify_before_run)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (
                 name,
@@ -104,6 +108,7 @@ def create_job(
                 normalized_input_json,
                 channel_id,
                 1 if run_once else 0,
+                1 if notify_before_run else 0,
             ),
         )
         conn.commit()
@@ -119,7 +124,7 @@ def get_job(db_path: Path, job_id: int) -> ScheduledJob:
         row = conn.execute(
             """
             SELECT id, name, cron_expr, start_node_id, input_json, channel_id, enabled, run_once,
-                   last_run_at, last_status, last_message
+                   notify_before_run, last_run_at, last_status, last_message
             FROM scheduled_jobs
             WHERE id = ?
             """,
@@ -141,6 +146,7 @@ def update_job(
     channel_id: str | None = None,
     enabled: bool | None = None,
     run_once: bool | None = None,
+    notify_before_run: bool | None = None,
 ) -> ScheduledJob:
     ensure_db(db_path)
     current = get_job(db_path, job_id)
@@ -148,7 +154,8 @@ def update_job(
         conn.execute(
             """
             UPDATE scheduled_jobs
-            SET name = ?, cron_expr = ?, start_node_id = ?, input_json = ?, channel_id = ?, enabled = ?, run_once = ?
+            SET name = ?, cron_expr = ?, start_node_id = ?, input_json = ?, channel_id = ?,
+                enabled = ?, run_once = ?, notify_before_run = ?
             WHERE id = ?
             """,
             (
@@ -159,6 +166,7 @@ def update_job(
                 current.channel_id if channel_id is None else channel_id,
                 1 if (current.enabled if enabled is None else enabled) else 0,
                 1 if (current.run_once if run_once is None else run_once) else 0,
+                1 if (current.notify_before_run if notify_before_run is None else notify_before_run) else 0,
                 job_id,
             ),
         )
@@ -241,7 +249,8 @@ def _row_to_job(row: tuple) -> ScheduledJob:
         channel_id=str(row[5] or ""),
         enabled=bool(row[6]),
         run_once=bool(row[7]),
-        last_run_at=str(row[8] or ""),
-        last_status=str(row[9] or ""),
-        last_message=str(row[10] or ""),
+        notify_before_run=bool(row[8]),
+        last_run_at=str(row[9] or ""),
+        last_status=str(row[10] or ""),
+        last_message=str(row[11] or ""),
     )
