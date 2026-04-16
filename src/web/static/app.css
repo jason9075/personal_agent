@@ -291,7 +291,7 @@ html, body {
   line-height: 1.7;
 }
 
-.cron-modal-box { width: 400px; }
+.cron-modal-box { width: min(560px, calc(100vw - 32px)); }
 
 .hint-box {
   margin-top: 10px;

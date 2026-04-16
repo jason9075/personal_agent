@@ -231,7 +231,7 @@ if __name__ == "__main__":
 - domain router 先讀使用者訊息、已知來源、既有檔案庫存，輸出 `decision`
 - long-running worker 負責下載、轉錄、產報告
 - schedule/tool worker 不呼叫 LLM，直接執行確定性動作
-- router 用 `default_args` 把已解析的 `source`、`target_date`、`workers`、`channel` 傳給下游
+- router 用 `default_args` 把已解析的 `source`、`target_date`、`workers`、`channel_id` 等 node-specific args 傳給下游
 
 當使用者要求「新增一個服務」時，優先思考是否要拆成兩個 node：
 - `xxx` router/collector：頂層入口，解析意圖、挑資料來源、產生 default_args
@@ -318,14 +318,14 @@ print(json.dumps({"kind": "reply", "reply": "請提供 RSS URL。"}, ensure_asci
 
 只要使用者要求「可以每 N 分鐘/每天/每週檢查並發送嗎」、「把剛剛那個任務排程化」、「如果有新的就發到 channel」這種 schedule 服務，必須把排程視為未來會獨立重播的工作。
 
-排程 node 不能只保存一段自然語言 `task_message`，也不能假設未來執行時還有當下對話、reply 原文、上一個 node 的 `prev_output` 或 LLM 記憶。排程資料必須保存足以重跑工作的 structured args：
+排程 node 不能只保存一段自然語言，也不能假設未來執行時還有當下對話、reply 原文、上一個 node 的 `prev_output` 或 LLM 記憶。排程資料必須保存 `start_node_id` 與統一 `input_json`，其中 `input_json` 格式固定為 `{"message":"...","args":{},"metadata":{}}`，且 args 必須足以重跑工作：
 - 外部來源：RSS URL、API endpoint、source alias、repo/path、查詢條件等
 - 任務設定：title/latest/all、digest_instruction、語言、格式、篩選條件
 - 發送設定：target_channel_id、是否只回原 channel、是否 ping
 - 執行狀態：last_seen_guid、last_seen_url、last_success_at、dedupe key、cache path 等，用來避免每次都重發同一集/同一筆資料
 - 專用參數：例如 finance report 要保存 `source`、`workers`；podcast digest 要保存 `feed_url/source`、`title/latest`、`digest_instruction`、`target_channel_id`
 
-若服務本身有 schedule 功能，優先建立專用 schedule tool node 或專用 schedule table，而不是只依賴泛用 `schedule` 的 `job_type=workflow + task_message`。泛用 workflow schedule 只適合不需要隱藏上下文、可用一句完整指令重建所有輸入的簡單任務。
+若服務本身需要 dedupe、last_seen 或其他狀態，優先建立專用 tool node 或專用狀態表；cron 只負責從指定 `start_node_id` 以固定 `input_json` 重播 workflow lifecycle。
 
 當使用者在成功執行某任務後 reply 說「幫我把這個設成排程」時：
 - router/schedule node 必須從被 reply 的訊息、`prev_output`、metadata、cache 或服務自己的 source registry 裡找回完整來源資料
@@ -334,20 +334,26 @@ print(json.dumps({"kind": "reply", "reply": "請提供 RSS URL。"}, ensure_asci
 
 範例錯誤設計：
 ```json
-{"job_type":"workflow","task_message":"檢查 Awesome News Daily 是否有最新一集，有的話摘要後發送"}
+{"start_node_id":"podcast-digest","input_json":{"message":"檢查 Awesome News Daily 是否有最新一集，有的話摘要後發送","args":{},"metadata":{}}}
 ```
 這會失敗，因為未來執行時不知道 RSS URL。
 
 範例正確設計：
 ```json
 {
-  "job_type": "podcast-digest",
-  "source": "https://example.com/rss.xml",
-  "title": "",
-  "latest": true,
-  "digest_instruction": "整理成重點摘要",
-  "target_channel_id": "1493950920470302881",
-  "last_seen_guid": "episode-guid-or-empty"
+  "start_node_id": "podcast-digest",
+  "input_json": {
+    "message": "整理最新一集",
+    "args": {
+      "source": "https://example.com/rss.xml",
+      "title": "",
+      "latest": true,
+      "digest_instruction": "整理成重點摘要",
+      "target_channel_id": "1493950920470302881",
+      "last_seen_guid": "episode-guid-or-empty"
+    },
+    "metadata": {}
+  }
 }
 ```
 

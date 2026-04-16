@@ -142,8 +142,8 @@
                 <th>ID</th>
                 <th>Name</th>
                 <th>Cron Expr</th>
-                <th>Source ID</th>
-                <th>Workers</th>
+                <th>Start Node</th>
+                <th>Input</th>
                 <th>Channel ID</th>
                 <th>Enabled</th>
                 <th>Run Once</th>
@@ -314,11 +314,14 @@
     <label class="field-label">Cron Expression</label>
     <input type="text" id="cj-cron-expr" spellcheck="false" placeholder="e.g. 0 9 * * 1-5">
 
-    <label class="field-label">Source ID</label>
-    <input type="text" id="cj-source-id" spellcheck="false">
+    <label class="field-label">Start Node</label>
+    <select id="cj-start-node"></select>
 
-    <label class="field-label">Workers</label>
-    <input type="number" id="cj-workers" min="1" value="4">
+    <label class="field-label">Message</label>
+    <textarea id="cj-message" rows="3" spellcheck="false"></textarea>
+
+    <label class="field-label">Args JSON</label>
+    <textarea id="cj-args-json" rows="6" spellcheck="false" placeholder='{"source":"youtinghao","workers":4}'></textarea>
 
     <label class="field-label">Channel ID</label>
     <input type="text" id="cj-channel-id" spellcheck="false">

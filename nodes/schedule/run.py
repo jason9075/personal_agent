@@ -23,17 +23,17 @@ def main() -> int:
         parser.add_argument("--id", type=int, default=0)
         parser.add_argument("--name", default="")
         parser.add_argument("--cron", default="")
-        parser.add_argument("--job-type", default="finance-report")
+        parser.add_argument("--start-node-id", default="")
+        parser.add_argument("--input-json", default="")
         parser.add_argument("--task-message", default="")
         parser.add_argument("--source", default="")
+        parser.add_argument("--target-date", default="")
         parser.add_argument("--workers", type=int, default=4)
         parser.add_argument("--channel", default="")
         parser.add_argument("--run-once", action="store_true")
         args = parser.parse_args()
         payload = {
             "action": args.action,
-            "job_type": args.job_type,
-            "task_message": args.task_message,
             "run_once": args.run_once,
         }
         if args.id:
@@ -42,8 +42,16 @@ def main() -> int:
             payload["name"] = args.name
         if args.cron:
             payload["cron"] = args.cron
+        if args.start_node_id:
+            payload["start_node_id"] = args.start_node_id
+        if args.input_json:
+            payload["input_json"] = args.input_json
+        if args.task_message:
+            payload["task_message"] = args.task_message
         if args.source:
             payload["source"] = args.source
+        if args.target_date:
+            payload["target_date"] = args.target_date
         if args.workers:
             payload["workers"] = args.workers
         channel_id = args.channel

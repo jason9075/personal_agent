@@ -316,7 +316,7 @@ async def _run(token: str) -> None:
     )
     web_server = uvicorn.Server(uvicorn_config)
     # Prevent uvicorn from overriding discord.py's signal handlers
-    web_server.config.install_signal_handlers = False
+    web_server.config.install_signal_handlers = False  # type: ignore[attr-defined]
 
     logger.info("Starting web server on port %s", WEB_PORT)
     await asyncio.gather(

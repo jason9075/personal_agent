@@ -5,11 +5,22 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .llm import LlmRequest, parse_json_response, run_codex_request, unwrap_decision_reply
 from .logging_utils import get_logger
 from .nodes import NodeActionResult, format_direct_node_reply, parse_llm_envelope
 from .workflow_db import WorkflowGraph, WorkflowNode, load_workflow_graph
+
+
+@dataclass(frozen=True)
+class WorkflowRequest:
+    message: str = ""
+    start_node_id: str = ""
+    channel_id: str = ""
+    image_paths: list[str] = field(default_factory=list)
+    args: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -30,7 +41,7 @@ class NodeExecutionResult:
 
 
 def execute_workflow(
-    user_msg: str,
+    request: str | WorkflowRequest,
     db_path: Path,
     repo_root: Path,
     *,
@@ -40,20 +51,40 @@ def execute_workflow(
     node_trace: list[str] | None = None,
     response_metadata: dict[str, str] | None = None,
 ) -> str:
-    """Execute the configured workflow starting from the single start node.
+    """Execute the configured workflow from the requested node or the DB start node.
 
     If *node_trace* is provided it will be populated with the IDs of every node
     that ran, in execution order.  The caller can inspect it after the call to
     show which nodes were involved (e.g. the debug UI).
     """
     logger = get_logger()
+    workflow_request = _normalize_workflow_request(
+        request,
+        channel_id=channel_id,
+        image_paths=image_paths,
+    )
     graph = load_workflow_graph(db_path)
-    current = graph.start_node()
+    if workflow_request.start_node_id:
+        current = graph.node_by_id(workflow_request.start_node_id)
+        if current is None:
+            raise RuntimeError(f"workflow start node not found: {workflow_request.start_node_id}")
+        if not current.enabled:
+            raise RuntimeError(f"workflow start node is disabled: {workflow_request.start_node_id}")
+    else:
+        current = graph.start_node()
     if current is None:
         raise RuntimeError("workflow has no enabled start_node")
 
-    workflow_image_paths = list(image_paths or [])
-    current_input: dict = {"message": user_msg, "channel_id": channel_id, "image_paths": workflow_image_paths}
+    user_msg = workflow_request.message
+    workflow_image_paths = list(workflow_request.image_paths)
+    workflow_metadata = dict(workflow_request.metadata)
+    current_input: dict = _build_node_input(
+        message=user_msg,
+        channel_id=workflow_request.channel_id,
+        image_paths=workflow_image_paths,
+        args=workflow_request.args,
+        metadata=workflow_metadata,
+    )
     prev_output = ""
 
     while current:
@@ -85,12 +116,13 @@ def execute_workflow(
                 raise RuntimeError(f"node '{current.id}' selected unreachable next node '{next_node.id}'")
 
             prev_output = result.output_text
-            current_input = {
-                "message": user_msg,
-                "channel_id": channel_id,
-                **result.decision.args,
-                "image_paths": workflow_image_paths,
-            }
+            current_input = _build_node_input(
+                message=user_msg,
+                channel_id=workflow_request.channel_id,
+                image_paths=workflow_image_paths,
+                args=result.decision.args,
+                metadata=workflow_metadata,
+            )
             current = next_node
             continue
 
@@ -103,15 +135,20 @@ def execute_workflow(
             _set_response_metadata(response_metadata, target_channel_id=target_channel_id)
             return reply
         prev_output = result.output_text
-        current_input = {
-            "message": user_msg,
-            "prev_output": prev_output,
-            "channel_id": channel_id,
-            "image_paths": workflow_image_paths,
-        }
+        current_input = _build_node_input(
+            message=user_msg,
+            channel_id=workflow_request.channel_id,
+            image_paths=workflow_image_paths,
+            args={},
+            metadata=workflow_metadata,
+            prev_output=prev_output,
+        )
         reply_metadata = _direct_reply_metadata(result.action_result)
         if reply_metadata:
-            current_input["metadata"] = reply_metadata
+            current_metadata = current_input.get("metadata", {})
+            if not isinstance(current_metadata, dict):
+                current_metadata = {}
+            current_input["metadata"] = {**current_metadata, **reply_metadata}
         current = next_node
 
     return "目前沒有可執行的節點。"
@@ -128,10 +165,9 @@ def _execute_node(
     recent_context: str = "",
     image_paths: list[str] | None = None,
 ) -> NodeExecutionResult:
-    if node.pre_hook_path:
-        _run_hook(node.id, "pre_hook", node.pre_hook_path, node_input, repo_root)
-
     payload = dict(node_input)
+    payload.setdefault("args", {})
+    payload.setdefault("metadata", {})
     candidate_targets = [
         {
             "id": candidate.id,
@@ -145,6 +181,9 @@ def _execute_node(
         payload["recent_context"] = recent_context
     if candidate_targets and "next_nodes" not in payload:
         payload["next_nodes"] = candidate_targets
+
+    if node.pre_hook_path:
+        _run_hook(node.id, "pre_hook", node.pre_hook_path, payload, repo_root)
 
     action_result = _execute_executor(node, payload, prev_output, repo_root)
     envelope = parse_llm_envelope(action_result)
@@ -386,6 +425,10 @@ def _execute_executor(
         raise RuntimeError(f"node executor not found: {run_py}")
 
     payload = dict(node_input)
+    args = payload.get("args", {})
+    if isinstance(args, dict):
+        for key, value in args.items():
+            payload.setdefault(str(key), value)
     if node.use_prev_output and prev_output and "prev_output" not in payload:
         payload["prev_output"] = prev_output
     if node.node_prompt_path and "node_prompt_path" not in payload:
@@ -435,6 +478,51 @@ def _run_hook(
         stderr=result.stderr.strip(),
         returncode=result.returncode,
     )
+
+
+def _normalize_workflow_request(
+    request: str | WorkflowRequest,
+    *,
+    channel_id: str,
+    image_paths: list[str] | None,
+) -> WorkflowRequest:
+    if isinstance(request, WorkflowRequest):
+        return WorkflowRequest(
+            message=request.message,
+            start_node_id=request.start_node_id,
+            channel_id=request.channel_id or channel_id,
+            image_paths=list(request.image_paths or image_paths or []),
+            args=dict(request.args),
+            metadata=dict(request.metadata),
+        )
+    return WorkflowRequest(
+        message=str(request),
+        channel_id=channel_id,
+        image_paths=list(image_paths or []),
+    )
+
+
+def _build_node_input(
+    *,
+    message: str,
+    channel_id: str,
+    image_paths: list[str],
+    args: dict[str, Any],
+    metadata: dict[str, str],
+    prev_output: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "message": message,
+        "channel_id": channel_id,
+        "image_paths": list(image_paths),
+        "args": dict(args),
+        "metadata": dict(metadata),
+    }
+    if prev_output:
+        payload["prev_output"] = prev_output
+    for key, value in args.items():
+        payload.setdefault(str(key), value)
+    return payload
 
 
 def _first_enabled_successor(

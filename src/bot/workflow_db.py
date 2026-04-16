@@ -525,6 +525,8 @@ def _upsert_edge_conn(conn: sqlite3.Connection, edge: WorkflowEdge) -> WorkflowE
         """,
         (edge.from_node_id, edge.to_node_id),
     )
+    if cursor.lastrowid is None:
+        raise RuntimeError("failed to create workflow edge")
     return WorkflowEdge(
         id=int(cursor.lastrowid),
         from_node_id=edge.from_node_id,

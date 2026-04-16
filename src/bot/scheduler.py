@@ -5,14 +5,12 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from threading import Semaphore
-from typing import Literal
+from typing import Any, Literal, cast
 
 import discord
 
-from .llm import LlmRequest, run_codex_request, unwrap_decision_reply
 from .logging_utils import get_logger
-from .schedule_db import ScheduledJob, delete_job, get_job, list_jobs, set_job_run_result
+from .schedule_db import ScheduledJob, delete_job, get_job, list_jobs, parse_input_json, set_job_run_result
 
 
 SCHEDULER_POLL_SECONDS = 30
@@ -95,7 +93,7 @@ class FinanceScheduler:
         logger = get_logger()
 
         if job.channel_id:
-            channel = self.client.get_channel(int(job.channel_id))
+            channel = cast(Any, self.client.get_channel(int(job.channel_id)))
             if channel is not None:
                 trigger_text = "手動觸發" if trigger == "manual" else "排程"
                 await channel.send(f"{trigger_text} `{job.name}` 開始執行，處理中…")
@@ -127,7 +125,7 @@ class FinanceScheduler:
 
         if not job.channel_id:
             return
-        channel = self.client.get_channel(int(job.channel_id))
+        channel = cast(Any, self.client.get_channel(int(job.channel_id)))
         if channel is None:
             return
         if status == "ok":
@@ -137,88 +135,36 @@ class FinanceScheduler:
             prefix = f"{trigger_text} `{job.name}` 執行失敗"
             await channel.send(f"{prefix}：\n```text\n{output[:1800]}\n```")
 
-    def _run_finance_report_job(self, job: ScheduledJob) -> str:
-        report_node_dir = self.repo_root / "nodes" / "finance-report"
-        if str(report_node_dir) not in __import__("sys").path:
-            __import__("sys").path.insert(0, str(report_node_dir))
-
-        from impl.analyze import save_markdown_outputs
-        from impl.config import load_configs
-        from impl.runner import WHISPER_CONCURRENCY, prepare_finance_report
-
-        outputs: list[str] = []
-        errors: list[str] = []
-
-        for config in load_configs(job.source_id):
-            try:
-                config.ensure_directories()
-                prepared = prepare_finance_report(
-                    config=config,
-                    requested_target_date=None,
-                    whisper_slots=Semaphore(WHISPER_CONCURRENCY),
-                )
-                existing_message = str(prepared.get("existing_message", "")).strip()
-                if existing_message:
-                    outputs.append(existing_message)
-                    continue
-
-                request = LlmRequest(
-                    node_id="finance-report",
-                    model_name=config.codex_model or "gpt-5.4",
-                    node_prompt_path="nodes/finance-report/node.md",
-                    run_output=str(prepared["run_output"]),
-                    task_prompt=str(prepared["task_prompt"]),
-                    metadata={
-                        "source_id": str(prepared["source_id"]),
-                        "target_date": str(prepared["target_date"]),
-                        "audio_duration": str(prepared.get("audio_duration", "")),
-                    },
-                )
-                markdown = unwrap_decision_reply(run_codex_request(request, self.repo_root)).strip()
-                save_markdown_outputs(
-                    markdown,
-                    note_path=Path(str(prepared["note_path"])),
-                    codex_output_path=Path(str(prepared["codex_output_path"])),
-                )
-                outputs.append(
-                    _format_finance_report_message(
-                        str(prepared["source_title"]),
-                        str(prepared["target_date"]),
-                        markdown,
-                        audio_duration=str(prepared.get("audio_duration", "")),
-                    )
-                )
-            except Exception as exc:
-                source_label = config.source.source_id
-                errors.append(f"[{source_label}] {type(exc).__name__}: {exc}")
-
-        if errors:
-            details = "\n".join(errors)
-            if outputs:
-                details = "\n".join(outputs + ["", "Errors:", details])
-            raise RuntimeError(details)
-        return "\n\n".join(output.strip() for output in outputs if output.strip()) or "(no output)"
-
     def _run_scheduled_job(self, job: ScheduledJob) -> str:
-        if job.job_type == "finance-report":
-            return self._run_finance_report_job(job)
-        if job.job_type == "workflow":
-            return self._run_workflow_job(job)
-        raise RuntimeError(f"unsupported schedule job_type: {job.job_type}")
-
-    def _run_workflow_job(self, job: ScheduledJob) -> str:
         from .config import WORKFLOW_DB_PATH
-        from .engine import execute_workflow
+        from .engine import WorkflowRequest, execute_workflow
 
-        task_message = job.task_message.strip()
-        if not task_message:
-            raise RuntimeError("workflow schedule job requires task_message")
+        input_payload = parse_input_json(job.input_json)
+        args = input_payload.get("args", {})
+        if not isinstance(args, dict):
+            args = {}
+        metadata = input_payload.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        workflow_metadata = {str(key): str(value) for key, value in metadata.items()}
+        workflow_metadata.update(
+            {
+                "trigger": "cron",
+                "job_id": str(job.id),
+                "job_name": job.name,
+            }
+        )
         response_metadata: dict[str, str] = {}
         return execute_workflow(
-            task_message,
+            WorkflowRequest(
+                message=str(input_payload.get("message", "")),
+                start_node_id=job.start_node_id,
+                channel_id=job.channel_id,
+                args={str(key): value for key, value in args.items()},
+                metadata=workflow_metadata,
+            ),
             WORKFLOW_DB_PATH,
             self.repo_root,
-            channel_id=job.channel_id,
             response_metadata=response_metadata,
         ).strip()
 
@@ -294,14 +240,3 @@ async def _send_to_channel(channel, content: str, limit: int = 1900) -> None:
         text = text[split_at:].strip()
     if text:
         await channel.send(text)
-
-
-def _format_finance_report_message(source_title: str, target_date: str, markdown: str, *, audio_duration: str = "") -> str:
-    header = f"【{source_title}｜{target_date}】"
-    duration_line = f"音檔時長：{audio_duration.strip()}" if audio_duration.strip() else ""
-    content = markdown.strip()
-    if duration_line and duration_line not in content:
-        content = f"{duration_line}\n\n{content}"
-    if content.startswith(header):
-        return content
-    return f"{header}\n\n{content}"

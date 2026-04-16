@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
 
-from .schedule_db import create_job, delete_job, ensure_db, list_jobs, update_job
+from .schedule_db import create_job, delete_job, ensure_db, list_jobs, parse_input_json, update_job
 from .scheduler import parse_cron
 from .config import SCHEDULE_DB_PATH
 
@@ -86,7 +87,7 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
             return "目前沒有排程。"
         lines = ["目前排程："]
         for job in jobs:
-            target = _format_schedule_target(job.job_type, job.task_message, job.source_id, job.workers)
+            target = _format_schedule_target(job.start_node_id, job.input_json)
             enabled = "enabled" if job.enabled else "disabled"
             run_once_label = " | run_once" if job.run_once else ""
             last = f" | last={job.last_run_at} {job.last_status}".rstrip() if job.last_run_at or job.last_status else ""
@@ -98,30 +99,26 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
     if action == "add":
         name = str(args.get("name", "")).strip()
         cron_expr = str(args.get("cron", "")).strip()
-        job_type = _normalize_job_type(args.get("job_type") or args.get("type") or args.get("target_node_id"))
-        task_message = str(args.get("task_message", "") or args.get("message", "")).strip()
-        source_id = str(args.get("source", "")).strip()
-        workers = int(args.get("workers", 4))
+        start_node_id = str(args.get("start_node_id") or args.get("node") or args.get("target_node_id") or "").strip()
+        input_json = _schedule_input_from_args(args)
         target_channel = str(args.get("channel", "") or args.get("channel_id", "")).strip() or channel_id
         run_once = bool(args.get("run_once", False))
         if not name or not cron_expr:
             raise RuntimeError("add requires name=<job_name> and cron=\"m h dom mon dow\"")
-        if job_type != "finance-report" and not task_message:
-            raise RuntimeError("generic schedule requires task_message")
+        if not start_node_id:
+            raise RuntimeError("add requires start_node_id=<node_id>")
         parse_cron(cron_expr)
         job = create_job(
             SCHEDULE_DB_PATH,
             name=name,
             cron_expr=cron_expr,
-            job_type=job_type,
-            task_message=task_message,
-            source_id=source_id,
-            workers=workers,
+            start_node_id=start_node_id,
+            input_json=input_json,
             channel_id=target_channel,
             run_once=run_once,
         )
         kind = "一次性排程" if job.run_once else "排程"
-        return f"已新增{kind} #{job.id} `{job.name}`：cron=`{job.cron_expr}` {_format_schedule_target(job.job_type, job.task_message, job.source_id, job.workers)}"
+        return f"已新增{kind} #{job.id} `{job.name}`：cron=`{job.cron_expr}` {_format_schedule_target(job.start_node_id, job.input_json)}"
 
     if action in {"update", "enable", "disable", "delete"}:
         job_id = int(args.get("id", 0))
@@ -140,16 +137,10 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
 
         update_name = str(args.get("name", "")).strip() or None
         update_cron_expr = str(args.get("cron", "")).strip() or None
-        update_job_type = _normalize_job_type(args.get("job_type") or args.get("type") or args.get("target_node_id")) if (
-            "job_type" in args or "type" in args or "target_node_id" in args
-        ) else None
-        update_task_message = str(args.get("task_message", "") or args.get("message", "")).strip() if (
-            "task_message" in args or "message" in args
-        ) else None
-        update_source_id = str(args.get("source", "")).strip() if "source" in args else None
-        if update_source_id == "":
-            update_source_id = ""
-        update_workers = int(args["workers"]) if "workers" in args else None
+        update_start_node_id = str(
+            args.get("start_node_id") or args.get("node") or args.get("target_node_id") or ""
+        ).strip() or None
+        update_input_json = _schedule_input_from_args(args) if _has_schedule_input(args) else None
         update_target_channel = str(args.get("channel", "") or args.get("channel_id", "")).strip() or None
         update_run_once = bool(args["run_once"]) if "run_once" in args else None
         if update_cron_expr:
@@ -159,30 +150,56 @@ def execute_schedule_action(args: dict, *, channel_id: str = "") -> str:
             job_id,
             name=update_name,
             cron_expr=update_cron_expr,
-            job_type=update_job_type,
-            task_message=update_task_message,
-            source_id=update_source_id,
-            workers=update_workers,
+            start_node_id=update_start_node_id,
+            input_json=update_input_json,
             channel_id=update_target_channel,
             run_once=update_run_once,
         )
-        return f"已更新排程 #{job.id} `{job.name}`：cron=`{job.cron_expr}` {_format_schedule_target(job.job_type, job.task_message, job.source_id, job.workers)}"
+        return f"已更新排程 #{job.id} `{job.name}`：cron=`{job.cron_expr}` {_format_schedule_target(job.start_node_id, job.input_json)}"
 
     raise RuntimeError(f"unsupported schedule action: {action}")
 
 
-def _normalize_job_type(raw_value: object) -> str:
-    value = str(raw_value or "").strip().lower()
-    if value in {"", "finance", "finance-report", "finance_report"}:
-        return "finance-report"
-    if value in {"workflow", "message", "generic", "task"}:
-        return "workflow"
-    return value
+def _has_schedule_input(args: dict) -> bool:
+    return any(key in args for key in ("input_json", "message", "task_message", "args", "source", "target_date", "workers"))
 
 
-def _format_schedule_target(job_type: str, task_message: str, source_id: str, workers: int) -> str:
-    if job_type == "finance-report":
-        source_label = source_id or "(all)"
-        return f"type=finance-report | source={source_label} | workers={workers}"
-    task_label = task_message[:80] + ("..." if len(task_message) > 80 else "")
-    return f"type={job_type} | task={task_label or '(empty)'}"
+def _schedule_input_from_args(args: dict) -> dict[str, Any]:
+    if "input_json" in args:
+        raw_input = args["input_json"]
+        if isinstance(raw_input, dict):
+            parsed = dict(raw_input)
+        else:
+            parsed = parse_input_json(str(raw_input))
+    else:
+        parsed = {
+            "message": str(args.get("message", "") or args.get("task_message", "")),
+            "args": {},
+            "metadata": {},
+        }
+
+    node_args = parsed.get("args", {})
+    if not isinstance(node_args, dict):
+        node_args = {}
+    for key in ("source", "target_date", "workers"):
+        if key in args:
+            node_args[key] = args[key]
+    parsed["args"] = node_args
+    parsed["message"] = str(parsed.get("message", ""))
+    metadata = parsed.get("metadata", {})
+    parsed["metadata"] = metadata if isinstance(metadata, dict) else {}
+    return parsed
+
+
+def _format_schedule_target(start_node_id: str, input_json: str) -> str:
+    try:
+        parsed = parse_input_json(input_json)
+    except RuntimeError:
+        parsed = {}
+    message = str(parsed.get("message", "")).strip()
+    args = parsed.get("args", {})
+    args_label = json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, dict) and args else "{}"
+    if len(args_label) > 80:
+        args_label = args_label[:77] + "..."
+    message_label = message[:60] + ("..." if len(message) > 60 else "")
+    return f"node={start_node_id} | message={message_label or '(empty)'} | args={args_label}"

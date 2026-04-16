@@ -13,13 +13,15 @@ from fastapi.staticfiles import StaticFiles
 
 from ..bot.engine import execute_workflow
 from ..bot.prompts import build_runtime_context, compose_prompt, load_engine_system_prompt, load_prompt_path
-from ..bot.scheduler import FinanceScheduler
+from ..bot.scheduler import FinanceScheduler, parse_cron
 from ..bot.schedule_db import (
     ScheduledJob,
     create_job,
     delete_job,
     get_job,
     list_jobs,
+    normalize_input_json,
+    parse_input_json,
     update_job,
 )
 from ..bot.workflow_db import (
@@ -160,19 +162,23 @@ def create_app(
     @app.post("/api/schedule/jobs")
     async def create_job_endpoint(body: dict[str, Any]) -> JSONResponse:
         try:
+            start_node_id = str(body["start_node_id"]).strip()
+            _validate_schedule_start_node(workflow_db_path, start_node_id)
+            cron_expr = str(body["cron_expr"])
+            parse_cron(cron_expr)
             job = create_job(
                 schedule_db_path,
                 name=str(body["name"]),
-                cron_expr=str(body["cron_expr"]),
-                job_type=str(body.get("job_type", "finance-report")),
-                task_message=str(body.get("task_message", "")),
-                source_id=str(body.get("source_id", "")),
-                workers=int(body.get("workers", 4)),
+                cron_expr=cron_expr,
+                start_node_id=start_node_id,
+                input_json=_input_json_from_body(body),
                 channel_id=str(body.get("channel_id", "")),
                 run_once=bool(body.get("run_once", False)),
             )
         except KeyError as exc:
             raise HTTPException(status_code=422, detail=f"missing field: {exc}")
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return JSONResponse(_job_to_dict(job), status_code=201)
@@ -180,21 +186,31 @@ def create_app(
     @app.put("/api/schedule/jobs/{job_id}")
     async def update_job_endpoint(job_id: int, body: dict[str, Any]) -> JSONResponse:
         try:
+            start_node_id = str(body["start_node_id"]).strip() if "start_node_id" in body else None
+            if start_node_id is not None:
+                _validate_schedule_start_node(workflow_db_path, start_node_id)
+            cron_expr = str(body["cron_expr"]) if "cron_expr" in body else None
+            if cron_expr is not None:
+                parse_cron(cron_expr)
             job = update_job(
                 schedule_db_path,
                 job_id,
                 name=str(body["name"]) if "name" in body else None,
-                cron_expr=str(body["cron_expr"]) if "cron_expr" in body else None,
-                job_type=str(body["job_type"]) if "job_type" in body else None,
-                task_message=str(body["task_message"]) if "task_message" in body else None,
-                source_id=str(body["source_id"]) if "source_id" in body else None,
-                workers=int(body["workers"]) if "workers" in body else None,
+                cron_expr=cron_expr,
+                start_node_id=start_node_id,
+                input_json=_input_json_from_body(body) if ("input_json" in body or "message" in body or "args" in body) else None,
                 channel_id=str(body["channel_id"]) if "channel_id" in body else None,
                 enabled=bool(body["enabled"]) if "enabled" in body else None,
                 run_once=bool(body["run_once"]) if "run_once" in body else None,
             )
         except RuntimeError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            detail = str(exc)
+            status_code = 404 if "not found" in detail else 400
+            raise HTTPException(status_code=status_code, detail=detail)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return JSONResponse(_job_to_dict(job))
 
     @app.delete("/api/schedule/jobs/{job_id}")
@@ -211,7 +227,10 @@ def create_app(
             raise HTTPException(status_code=503, detail="scheduler is not available")
         try:
             await scheduler.run_job_now(job_id)
-            job = get_job(schedule_db_path, job_id)
+            try:
+                job = get_job(schedule_db_path, job_id)
+            except RuntimeError:
+                return JSONResponse({"status": "deleted", "id": job_id})
         except RuntimeError as exc:
             detail = str(exc)
             status_code = 409 if "already running" in detail else 404
@@ -289,14 +308,14 @@ def create_app(
 
 
 def _job_to_dict(job: ScheduledJob) -> dict[str, Any]:
+    input_payload = parse_input_json(job.input_json)
     return {
         "id": job.id,
         "name": job.name,
         "cron_expr": job.cron_expr,
-        "job_type": job.job_type,
-        "task_message": job.task_message,
-        "source_id": job.source_id,
-        "workers": job.workers,
+        "start_node_id": job.start_node_id,
+        "input_json": job.input_json,
+        "input": input_payload,
         "channel_id": job.channel_id,
         "enabled": job.enabled,
         "run_once": job.run_once,
@@ -304,6 +323,28 @@ def _job_to_dict(job: ScheduledJob) -> dict[str, Any]:
         "last_status": job.last_status,
         "last_message": job.last_message,
     }
+
+
+def _input_json_from_body(body: dict[str, Any]) -> str:
+    if "input_json" in body:
+        raw_input = body["input_json"]
+        return normalize_input_json(raw_input if isinstance(raw_input, dict) else str(raw_input))
+    payload = {
+        "message": str(body.get("message", "")),
+        "args": body.get("args", {}),
+        "metadata": body.get("metadata", {}),
+    }
+    return normalize_input_json(payload)
+
+
+def _validate_schedule_start_node(workflow_db_path: Path, start_node_id: str) -> None:
+    if not start_node_id:
+        raise HTTPException(status_code=422, detail="start_node_id is required")
+    node = get_node(workflow_db_path, start_node_id)
+    if node is None:
+        raise HTTPException(status_code=422, detail=f"start node '{start_node_id}' not found")
+    if not node.enabled:
+        raise HTTPException(status_code=422, detail=f"start node '{start_node_id}' is disabled")
 
 
 def _nullable_str(value: Any) -> str | None:

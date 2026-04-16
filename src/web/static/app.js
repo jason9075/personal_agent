@@ -1006,8 +1006,8 @@ function renderCronTable(jobs) {
       <td class="dim">${job.id}</td>
       <td>${escapeHtml(job.name)}</td>
       <td class="mono">${escapeHtml(job.cron_expr)}</td>
-      <td class="mono">${escapeHtml(job.source_id || '—')}</td>
-      <td class="dim">${job.workers}</td>
+      <td class="mono">${escapeHtml(job.start_node_id || '—')}</td>
+      <td>${escapeHtml(formatCronInputPreview(job.input || {}))}</td>
       <td class="mono">${escapeHtml(job.channel_id || '—')}</td>
       <td>${enabledBadge}</td>
       <td>${job.run_once ? '<span class="status-ok">●</span>' : '<span class="dim">—</span>'}</td>
@@ -1024,37 +1024,55 @@ function renderCronTable(jobs) {
   }).join('');
 }
 
-function openCronModal(jobId = null) {
+function formatCronInputPreview(input) {
+  const message = String(input.message || '').trim();
+  const args = input.args && typeof input.args === 'object' ? input.args : {};
+  const argsText = Object.keys(args).length ? JSON.stringify(args) : '{}';
+  const text = `${message || '(empty)'} | ${argsText}`;
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
+async function openCronModal(jobId = null) {
   cronEditingId = jobId;
   const title = document.getElementById('cron-modal-title');
-  const tbody = document.getElementById('cron-table-body');
+  await populateCronStartNodes();
 
   if (jobId !== null) {
-    // find job data from rendered table rows is fragile; re-fetch from API instead
-    GET('/api/schedule/jobs').then(jobs => {
-      const job = jobs.find(j => j.id === jobId);
-      if (!job) return;
-      title.textContent = 'Edit Job';
-      document.getElementById('cj-name').value = job.name;
-      document.getElementById('cj-cron-expr').value = job.cron_expr;
-      document.getElementById('cj-source-id').value = job.source_id || '';
-      document.getElementById('cj-workers').value = job.workers;
-      document.getElementById('cj-channel-id').value = job.channel_id || '';
-      document.getElementById('cj-enabled').checked = job.enabled;
-      document.getElementById('cj-run-once').checked = job.run_once || false;
-      document.getElementById('cron-modal').classList.remove('hidden');
-    });
+    const jobs = await GET('/api/schedule/jobs');
+    const job = jobs.find(j => j.id === jobId);
+    if (!job) return;
+    title.textContent = 'Edit Job';
+    document.getElementById('cj-name').value = job.name;
+    document.getElementById('cj-cron-expr').value = job.cron_expr;
+    document.getElementById('cj-start-node').value = job.start_node_id || '';
+    const input = job.input || {};
+    document.getElementById('cj-message').value = input.message || '';
+    document.getElementById('cj-args-json').value = JSON.stringify(input.args || {}, null, 2);
+    document.getElementById('cj-channel-id').value = job.channel_id || '';
+    document.getElementById('cj-enabled').checked = job.enabled;
+    document.getElementById('cj-run-once').checked = job.run_once || false;
+    document.getElementById('cron-modal').classList.remove('hidden');
   } else {
     title.textContent = 'Add Job';
     document.getElementById('cj-name').value = '';
     document.getElementById('cj-cron-expr').value = '';
-    document.getElementById('cj-source-id').value = '';
-    document.getElementById('cj-workers').value = '4';
+    document.getElementById('cj-message').value = '';
+    document.getElementById('cj-args-json').value = '{}';
     document.getElementById('cj-channel-id').value = '';
     document.getElementById('cj-enabled').checked = true;
     document.getElementById('cj-run-once').checked = false;
     document.getElementById('cron-modal').classList.remove('hidden');
   }
+}
+
+async function populateCronStartNodes() {
+  const select = document.getElementById('cj-start-node');
+  let nodes = (S.graphData && S.graphData.nodes) ? S.graphData.nodes : [];
+  if (!nodes.length) nodes = await GET('/api/nodes');
+  const enabledNodes = nodes.filter(node => node.enabled);
+  select.innerHTML = enabledNodes.map(node => (
+    `<option value="${escapeHtml(node.id)}">${escapeHtml(node.id)} — ${escapeHtml(node.name || node.id)}</option>`
+  )).join('');
 }
 
 async function deleteCronJob(jobId) {
@@ -1095,15 +1113,30 @@ document.getElementById('btn-reload-cron').addEventListener('click', async () =>
 document.getElementById('cj-confirm').addEventListener('click', async () => {
   const name = document.getElementById('cj-name').value.trim();
   const cronExpr = document.getElementById('cj-cron-expr').value.trim();
-  if (!name || !cronExpr) {
-    toast('Name and Cron Expression are required', 'err');
+  const startNodeId = document.getElementById('cj-start-node').value.trim();
+  if (!name || !cronExpr || !startNodeId) {
+    toast('Name, Cron Expression, and Start Node are required', 'err');
+    return;
+  }
+  let args = {};
+  try {
+    args = JSON.parse(document.getElementById('cj-args-json').value.trim() || '{}');
+    if (!args || Array.isArray(args) || typeof args !== 'object') {
+      throw new Error('Args JSON must be an object');
+    }
+  } catch (err) {
+    toast(`Invalid Args JSON: ${err.message}`, 'err');
     return;
   }
   const body = {
     name,
     cron_expr: cronExpr,
-    source_id: document.getElementById('cj-source-id').value.trim(),
-    workers: parseInt(document.getElementById('cj-workers').value, 10) || 4,
+    start_node_id: startNodeId,
+    input_json: {
+      message: document.getElementById('cj-message').value.trim(),
+      args,
+      metadata: {},
+    },
     channel_id: document.getElementById('cj-channel-id').value.trim(),
     enabled: document.getElementById('cj-enabled').checked,
     run_once: document.getElementById('cj-run-once').checked,

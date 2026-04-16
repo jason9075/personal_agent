@@ -1,9 +1,11 @@
-"""SQLite-backed schedule storage for the Discord bot."""
+"""SQLite-backed schedule storage for workflow jobs."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -11,10 +13,8 @@ class ScheduledJob:
     id: int
     name: str
     cron_expr: str
-    job_type: str
-    task_message: str
-    source_id: str
-    workers: int
+    start_node_id: str
+    input_json: str
     channel_id: str
     enabled: bool
     run_once: bool
@@ -23,19 +23,35 @@ class ScheduledJob:
     last_message: str
 
 
+_EXPECTED_COLUMNS = {
+    "id",
+    "name",
+    "cron_expr",
+    "start_node_id",
+    "input_json",
+    "channel_id",
+    "enabled",
+    "run_once",
+    "last_run_at",
+    "last_status",
+    "last_message",
+}
+
+
 def ensure_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
+        existing_columns = _table_columns(conn, "scheduled_jobs")
+        if existing_columns and existing_columns != _EXPECTED_COLUMNS:
+            conn.execute("DROP TABLE scheduled_jobs")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS scheduled_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 cron_expr TEXT NOT NULL,
-                job_type TEXT NOT NULL DEFAULT 'finance-report',
-                task_message TEXT NOT NULL DEFAULT '',
-                source_id TEXT NOT NULL DEFAULT '',
-                workers INTEGER NOT NULL DEFAULT 4,
+                start_node_id TEXT NOT NULL,
+                input_json TEXT NOT NULL DEFAULT '{}',
                 channel_id TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 run_once INTEGER NOT NULL DEFAULT 0,
@@ -53,7 +69,7 @@ def list_jobs(db_path: Path) -> list[ScheduledJob]:
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT id, name, cron_expr, job_type, task_message, source_id, workers, channel_id, enabled, run_once,
+            SELECT id, name, cron_expr, start_node_id, input_json, channel_id, enabled, run_once,
                    last_run_at, last_status, last_message
             FROM scheduled_jobs
             ORDER BY id ASC
@@ -67,28 +83,25 @@ def create_job(
     *,
     name: str,
     cron_expr: str,
-    job_type: str = "finance-report",
-    task_message: str = "",
-    source_id: str = "",
-    workers: int = 4,
+    start_node_id: str,
+    input_json: str | dict[str, Any] = "{}",
     channel_id: str = "",
     run_once: bool = False,
 ) -> ScheduledJob:
     ensure_db(db_path)
+    normalized_input_json = normalize_input_json(input_json)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO scheduled_jobs
-                (name, cron_expr, job_type, task_message, source_id, workers, channel_id, enabled, run_once)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+                (name, cron_expr, start_node_id, input_json, channel_id, enabled, run_once)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
             """,
             (
                 name,
                 cron_expr,
-                job_type,
-                task_message,
-                source_id,
-                workers,
+                start_node_id,
+                normalized_input_json,
                 channel_id,
                 1 if run_once else 0,
             ),
@@ -105,7 +118,7 @@ def get_job(db_path: Path, job_id: int) -> ScheduledJob:
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
             """
-            SELECT id, name, cron_expr, job_type, task_message, source_id, workers, channel_id, enabled, run_once,
+            SELECT id, name, cron_expr, start_node_id, input_json, channel_id, enabled, run_once,
                    last_run_at, last_status, last_message
             FROM scheduled_jobs
             WHERE id = ?
@@ -123,10 +136,8 @@ def update_job(
     *,
     name: str | None = None,
     cron_expr: str | None = None,
-    job_type: str | None = None,
-    task_message: str | None = None,
-    source_id: str | None = None,
-    workers: int | None = None,
+    start_node_id: str | None = None,
+    input_json: str | dict[str, Any] | None = None,
     channel_id: str | None = None,
     enabled: bool | None = None,
     run_once: bool | None = None,
@@ -137,16 +148,14 @@ def update_job(
         conn.execute(
             """
             UPDATE scheduled_jobs
-            SET name = ?, cron_expr = ?, job_type = ?, task_message = ?, source_id = ?, workers = ?, channel_id = ?, enabled = ?, run_once = ?
+            SET name = ?, cron_expr = ?, start_node_id = ?, input_json = ?, channel_id = ?, enabled = ?, run_once = ?
             WHERE id = ?
             """,
             (
                 current.name if name is None else name,
                 current.cron_expr if cron_expr is None else cron_expr,
-                current.job_type if job_type is None else job_type,
-                current.task_message if task_message is None else task_message,
-                current.source_id if source_id is None else source_id,
-                current.workers if workers is None else workers,
+                current.start_node_id if start_node_id is None else start_node_id,
+                current.input_json if input_json is None else normalize_input_json(input_json),
                 current.channel_id if channel_id is None else channel_id,
                 1 if (current.enabled if enabled is None else enabled) else 0,
                 1 if (current.run_once if run_once is None else run_once) else 0,
@@ -187,19 +196,52 @@ def set_job_run_result(
         conn.commit()
 
 
+def parse_input_json(raw_value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw_value or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"input_json must be a JSON object: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("input_json must be a JSON object")
+    args = parsed.get("args", {})
+    if args is not None and not isinstance(args, dict):
+        raise RuntimeError("input_json.args must be a JSON object")
+    metadata = parsed.get("metadata", {})
+    if metadata is not None and not isinstance(metadata, dict):
+        raise RuntimeError("input_json.metadata must be a JSON object")
+    return parsed
+
+
+def normalize_input_json(raw_value: str | dict[str, Any]) -> str:
+    if isinstance(raw_value, dict):
+        parsed = raw_value
+    else:
+        parsed = parse_input_json(raw_value)
+    parsed = dict(parsed)
+    parsed["message"] = str(parsed.get("message", ""))
+    args = parsed.get("args", {})
+    parsed["args"] = args if isinstance(args, dict) else {}
+    metadata = parsed.get("metadata", {})
+    parsed["metadata"] = metadata if isinstance(metadata, dict) else {}
+    return json.dumps(parsed, ensure_ascii=False, sort_keys=True)
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
 def _row_to_job(row: tuple) -> ScheduledJob:
     return ScheduledJob(
         id=int(row[0]),
         name=str(row[1]),
         cron_expr=str(row[2]),
-        job_type=str(row[3] or "finance-report"),
-        task_message=str(row[4] or ""),
-        source_id=str(row[5]),
-        workers=int(row[6]),
-        channel_id=str(row[7]),
-        enabled=bool(row[8]),
-        run_once=bool(row[9]),
-        last_run_at=str(row[10] or ""),
-        last_status=str(row[11] or ""),
-        last_message=str(row[12] or ""),
+        start_node_id=str(row[3]),
+        input_json=normalize_input_json(str(row[4] or "{}")),
+        channel_id=str(row[5] or ""),
+        enabled=bool(row[6]),
+        run_once=bool(row[7]),
+        last_run_at=str(row[8] or ""),
+        last_status=str(row[9] or ""),
+        last_message=str(row[10] or ""),
     )
