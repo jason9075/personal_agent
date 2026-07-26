@@ -955,7 +955,7 @@ document.getElementById('engine-prompt-modal').addEventListener('click', event =
 
 // ── Nav ──────────────────────────────────────────────────────────────────────
 
-const PAGES = ['dag', 'cron', 'trace', 'debug'];
+const PAGES = ['dag', 'cron', 'reminders', 'trace', 'debug'];
 
 function switchPage(pageId) {
   PAGES.forEach(id => {
@@ -964,6 +964,7 @@ function switchPage(pageId) {
   });
 
   if (pageId === 'cron') loadCronJobs();
+  if (pageId === 'reminders') loadReminders();
   if (pageId === 'trace') loadTraceRuns();
   if (pageId === 'dag') fitCanvas();
 }
@@ -1190,6 +1191,233 @@ document.getElementById('cj-cancel').addEventListener('click', () => {
 document.getElementById('cron-modal').addEventListener('click', event => {
   if (event.target === event.currentTarget) {
     document.getElementById('cron-modal').classList.add('hidden');
+  }
+});
+
+// ── Reminders ────────────────────────────────────────────────────────────────
+
+let reminderEditingId = null;
+
+async function loadReminders() {
+  try {
+    const reminders = await GET('/api/reminders');
+    renderReminderTable(reminders);
+  } catch (err) {
+    toast(`Failed to load reminders: ${err.message}`, 'err');
+  }
+}
+
+function renderReminderTable(reminders) {
+  const tbody = document.getElementById('reminder-table-body');
+  const empty = document.getElementById('reminder-empty');
+  if (!reminders.length) {
+    tbody.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  tbody.innerHTML = reminders.map(reminder => {
+    const enabledBadge = reminder.enabled
+      ? '<span class="status-ok">●</span>'
+      : '<span class="status-err">●</span>';
+    const toggleLabel = reminder.enabled ? 'Disable' : 'Enable';
+    const toggleClass = reminder.enabled ? 'btn-secondary' : 'btn-primary';
+    const cadence = `Every ${reminder.interval_n} ${cadenceLabel(reminder.cadence, reminder.interval_n)}`;
+    return `<tr>
+      <td class="dim">${reminder.id}</td>
+      <td><span class="cron-truncate" title="${escapeAttr(reminder.name)}">${escapeHtml(reminder.name)}</span></td>
+      <td><span class="cron-truncate" title="${escapeAttr(reminder.message)}">${escapeHtml(reminder.message)}</span></td>
+      <td>${escapeHtml(cadence)}</td>
+      <td class="mono">${escapeHtml(reminder.next_trigger_at)}</td>
+      <td class="mono">${escapeHtml(reminder.channel_id)}</td>
+      <td class="dim">${escapeHtml(reminder.last_reminded_at || '—')}</td>
+      <td class="dim">${escapeHtml(reminder.last_done_at || '—')}</td>
+      <td>${enabledBadge}</td>
+      <td>
+        <div class="btn-row" style="margin:0;gap:4px">
+          <button class="btn btn-primary btn-sm" onclick="markReminderDone(${reminder.id})">Done</button>
+          <button class="btn ${toggleClass} btn-sm" onclick="toggleReminder(${reminder.id}, ${reminder.enabled ? 'false' : 'true'})">${toggleLabel}</button>
+          <button class="btn btn-secondary btn-sm" onclick="openReminderModal(${reminder.id})">Edit</button>
+          <button class="btn btn-secondary btn-sm" onclick="openReminderHistory(${reminder.id})">History</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteReminder(${reminder.id})">Delete</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function cadenceLabel(cadence, interval) {
+  const labels = {
+    day: interval === 1 ? 'day' : 'days',
+    week: interval === 1 ? 'week' : 'weeks',
+    month: interval === 1 ? 'month' : 'months',
+  };
+  return labels[cadence] || cadence;
+}
+
+function defaultReminderTrigger() {
+  const value = new Date();
+  value.setHours(value.getHours() + 1, 0, 0, 0);
+  const pad = number => String(number).padStart(2, '0');
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
+}
+
+async function openReminderModal(reminderId = null) {
+  reminderEditingId = reminderId;
+  const title = document.getElementById('reminder-modal-title');
+  if (reminderId === null) {
+    title.textContent = 'Add Reminder';
+    document.getElementById('rem-name').value = '';
+    document.getElementById('rem-message').value = '';
+    document.getElementById('rem-interval').value = '1';
+    document.getElementById('rem-cadence').value = 'day';
+    document.getElementById('rem-next-trigger').value = defaultReminderTrigger();
+    document.getElementById('rem-channel-id').value = '';
+    document.getElementById('rem-enabled').checked = true;
+  } else {
+    try {
+      const reminders = await GET('/api/reminders');
+      const reminder = reminders.find(item => item.id === reminderId);
+      if (!reminder) {
+        toast('Reminder not found', 'err');
+        return;
+      }
+      title.textContent = 'Edit Reminder';
+      document.getElementById('rem-name').value = reminder.name;
+      document.getElementById('rem-message').value = reminder.message;
+      document.getElementById('rem-interval').value = String(reminder.interval_n);
+      document.getElementById('rem-cadence').value = reminder.cadence;
+      document.getElementById('rem-next-trigger').value = reminder.next_trigger_at.slice(0, 16);
+      document.getElementById('rem-channel-id').value = reminder.channel_id;
+      document.getElementById('rem-enabled').checked = reminder.enabled;
+    } catch (err) {
+      toast(err.message, 'err');
+      return;
+    }
+  }
+  document.getElementById('reminder-modal').classList.remove('hidden');
+}
+
+async function deleteReminder(reminderId) {
+  if (!confirm('Delete this reminder and its event history?')) return;
+  try {
+    await DEL(`/api/reminders/${reminderId}`);
+    await loadReminders();
+    toast('Reminder deleted');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+async function toggleReminder(reminderId, enabled) {
+  try {
+    await PUT(`/api/reminders/${reminderId}`, { enabled });
+    await loadReminders();
+    toast(enabled ? 'Reminder enabled' : 'Reminder disabled');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+async function markReminderDone(reminderId) {
+  if (!confirm('Mark this reminder done and schedule its next occurrence?')) return;
+  try {
+    const result = await POST(`/api/reminders/${reminderId}/done`, {});
+    await loadReminders();
+    toast(`Done. Next: ${result.reminder.next_trigger_at}`);
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+async function openReminderHistory(reminderId) {
+  try {
+    const events = await GET(`/api/reminders/${reminderId}/events?limit=100`);
+    document.getElementById('reminder-history-title').textContent = `Reminder #${reminderId} History`;
+    const list = document.getElementById('reminder-history-list');
+    const empty = document.getElementById('reminder-history-empty');
+    if (!events.length) {
+      list.innerHTML = '';
+      empty.classList.remove('hidden');
+    } else {
+      empty.classList.add('hidden');
+      list.innerHTML = events.map(event => `
+        <div class="reminder-history-row">
+          <span class="${event.event_type === 'done' ? 'status-ok' : ''}">${escapeHtml(event.event_type.toUpperCase())}</span>
+          <span class="mono">${escapeHtml(event.occurred_at)}</span>
+          <span class="dim">cycle ${escapeHtml(event.cycle_due_at)}</span>
+          <span class="dim">${event.user_id ? `user ${escapeHtml(event.user_id)}` : `message ${escapeHtml(event.discord_message_id || '—')}`}</span>
+        </div>
+      `).join('');
+    }
+    document.getElementById('reminder-history-modal').classList.remove('hidden');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+document.getElementById('btn-add-reminder').addEventListener('click', () => openReminderModal(null));
+
+document.getElementById('btn-reload-reminders').addEventListener('click', async () => {
+  await loadReminders();
+  toast('Reloaded');
+});
+
+document.getElementById('rem-confirm').addEventListener('click', async () => {
+  const intervalN = Number.parseInt(document.getElementById('rem-interval').value, 10);
+  const body = {
+    name: document.getElementById('rem-name').value.trim(),
+    message: document.getElementById('rem-message').value.trim(),
+    cadence: document.getElementById('rem-cadence').value,
+    interval_n: intervalN,
+    next_trigger_at: document.getElementById('rem-next-trigger').value,
+    channel_id: document.getElementById('rem-channel-id').value.trim(),
+    enabled: document.getElementById('rem-enabled').checked,
+  };
+  if (!body.name || !body.message || !body.next_trigger_at || !body.channel_id) {
+    toast('Name, message, next trigger, and channel ID are required', 'err');
+    return;
+  }
+  if (!Number.isInteger(intervalN) || intervalN <= 0) {
+    toast('Every must be a positive integer', 'err');
+    return;
+  }
+  if (!/^\d+$/.test(body.channel_id)) {
+    toast('Channel ID must contain only digits', 'err');
+    return;
+  }
+  try {
+    if (reminderEditingId === null) {
+      await POST('/api/reminders', body);
+      toast('Reminder created');
+    } else {
+      await PUT(`/api/reminders/${reminderEditingId}`, body);
+      toast('Reminder updated');
+    }
+    document.getElementById('reminder-modal').classList.add('hidden');
+    await loadReminders();
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
+document.getElementById('rem-cancel').addEventListener('click', () => {
+  document.getElementById('reminder-modal').classList.add('hidden');
+});
+
+document.getElementById('reminder-modal').addEventListener('click', event => {
+  if (event.target === event.currentTarget) {
+    document.getElementById('reminder-modal').classList.add('hidden');
+  }
+});
+
+document.getElementById('reminder-history-close').addEventListener('click', () => {
+  document.getElementById('reminder-history-modal').classList.add('hidden');
+});
+
+document.getElementById('reminder-history-modal').addEventListener('click', event => {
+  if (event.target === event.currentTarget) {
+    document.getElementById('reminder-history-modal').classList.add('hidden');
   }
 });
 

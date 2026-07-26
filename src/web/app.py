@@ -1,6 +1,7 @@
 """FastAPI web application for workflow management."""
 from __future__ import annotations
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,16 @@ from fastapi.staticfiles import StaticFiles
 
 from ..bot.engine import execute_workflow
 from ..bot.prompts import build_runtime_context, compose_prompt, load_engine_system_prompt, load_prompt_path
+from ..bot.reminder_db import (
+    Reminder,
+    ReminderEvent,
+    complete_reminder,
+    create_reminder,
+    delete_reminder,
+    list_reminder_events,
+    list_reminders,
+    update_reminder,
+)
 from ..bot.scheduler import FinanceScheduler, parse_cron
 from ..bot.schedule_db import (
     ScheduledJob,
@@ -250,6 +261,87 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
         return JSONResponse(_job_to_dict(job))
 
+    @app.get("/api/reminders")
+    async def list_reminders_endpoint() -> JSONResponse:
+        return JSONResponse([_reminder_to_dict(reminder) for reminder in list_reminders(schedule_db_path)])
+
+    @app.post("/api/reminders")
+    async def create_reminder_endpoint(body: dict[str, Any]) -> JSONResponse:
+        try:
+            reminder = create_reminder(
+                schedule_db_path,
+                name=str(body["name"]),
+                message=str(body["message"]),
+                channel_id=str(body["channel_id"]),
+                cadence=str(body["cadence"]),
+                interval_n=int(body["interval_n"]),
+                next_trigger_at=str(body["next_trigger_at"]),
+                enabled=bool(body.get("enabled", True)),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=422, detail=f"missing field: {exc}")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(_reminder_to_dict(reminder), status_code=201)
+
+    @app.put("/api/reminders/{reminder_id}")
+    async def update_reminder_endpoint(reminder_id: int, body: dict[str, Any]) -> JSONResponse:
+        try:
+            reminder = update_reminder(
+                schedule_db_path,
+                reminder_id,
+                name=str(body["name"]) if "name" in body else None,
+                message=str(body["message"]) if "message" in body else None,
+                channel_id=str(body["channel_id"]) if "channel_id" in body else None,
+                cadence=str(body["cadence"]) if "cadence" in body else None,
+                interval_n=int(body["interval_n"]) if "interval_n" in body else None,
+                next_trigger_at=str(body["next_trigger_at"]) if "next_trigger_at" in body else None,
+                enabled=bool(body["enabled"]) if "enabled" in body else None,
+            )
+        except RuntimeError as exc:
+            detail = str(exc)
+            status_code = 404 if "not found" in detail else 400
+            raise HTTPException(status_code=status_code, detail=detail)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(_reminder_to_dict(reminder))
+
+    @app.delete("/api/reminders/{reminder_id}")
+    async def delete_reminder_endpoint(reminder_id: int) -> JSONResponse:
+        try:
+            delete_reminder(schedule_db_path, reminder_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return JSONResponse({"status": "ok"})
+
+    @app.get("/api/reminders/{reminder_id}/events")
+    async def reminder_events_endpoint(reminder_id: int, limit: int = 100) -> JSONResponse:
+        try:
+            events = list_reminder_events(schedule_db_path, reminder_id, limit=limit)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return JSONResponse([_reminder_event_to_dict(event) for event in events])
+
+    @app.post("/api/reminders/{reminder_id}/done")
+    async def complete_reminder_endpoint(reminder_id: int) -> JSONResponse:
+        try:
+            completion = complete_reminder(
+                schedule_db_path,
+                reminder_id,
+                completed_at=datetime.now(),
+                user_id="web",
+            )
+        except RuntimeError as exc:
+            detail = str(exc)
+            status_code = 404 if "not found" in detail else 400
+            raise HTTPException(status_code=status_code, detail=detail)
+        return JSONResponse(
+            {
+                "status": completion.status,
+                "reminder": _reminder_to_dict(completion.reminder),
+            }
+        )
+
     @app.post("/api/prompt-preview")
     async def prompt_preview_endpoint(body: dict[str, Any]) -> JSONResponse:
         path_str = _nullable_str(body.get("path"))
@@ -349,6 +441,37 @@ def _job_to_dict(job: ScheduledJob) -> dict[str, Any]:
         "last_run_at": job.last_run_at,
         "last_status": job.last_status,
         "last_message": job.last_message,
+    }
+
+
+def _reminder_to_dict(reminder: Reminder) -> dict[str, Any]:
+    return {
+        "id": reminder.id,
+        "name": reminder.name,
+        "message": reminder.message,
+        "channel_id": reminder.channel_id,
+        "cadence": reminder.cadence,
+        "interval_n": reminder.interval_n,
+        "next_trigger_at": reminder.next_trigger_at,
+        "cycle_due_at": reminder.cycle_due_at,
+        "enabled": reminder.enabled,
+        "last_reminded_at": reminder.last_reminded_at,
+        "last_done_at": reminder.last_done_at,
+        "created_at": reminder.created_at,
+        "updated_at": reminder.updated_at,
+    }
+
+
+def _reminder_event_to_dict(event: ReminderEvent) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "reminder_id": event.reminder_id,
+        "event_type": event.event_type,
+        "cycle_due_at": event.cycle_due_at,
+        "occurred_at": event.occurred_at,
+        "discord_message_id": event.discord_message_id,
+        "channel_id": event.channel_id,
+        "user_id": event.user_id,
     }
 
 

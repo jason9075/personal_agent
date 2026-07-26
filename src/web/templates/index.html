@@ -24,6 +24,10 @@
       <span class="nav-icon">⏰</span>
       <span class="nav-label">Cron</span>
     </button>
+    <button class="nav-item" data-page="reminders">
+      <span class="nav-icon">✓</span>
+      <span class="nav-label">Reminders</span>
+    </button>
     <button class="nav-item" data-page="trace">
       <span class="nav-icon">▤</span>
       <span class="nav-label">Trace</span>
@@ -159,6 +163,36 @@
             <tbody id="cron-table-body"></tbody>
           </table>
           <div id="cron-empty" class="cron-empty hidden">No scheduled jobs yet. Click <strong>+ Job</strong> to create one.</div>
+        </div>
+      </div>
+    </div>
+    <!-- Reminders Page -->
+    <div id="page-reminders" class="page hidden">
+      <div id="reminder-content">
+        <div class="cron-toolbar">
+          <button id="btn-add-reminder" class="btn btn-primary">+ Reminder</button>
+          <button id="btn-reload-reminders" class="btn btn-ghost">↺ Reload</button>
+          <span class="reminder-help">Active items are sent daily at the configured time until you reply <code>done</code> or 👌.</span>
+        </div>
+        <div id="reminder-table-wrap">
+          <table id="reminder-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Reminder</th>
+                <th>Cadence</th>
+                <th>Next Trigger</th>
+                <th>Channel ID</th>
+                <th>Last Sent</th>
+                <th>Last Done</th>
+                <th>Enabled</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="reminder-table-body"></tbody>
+          </table>
+          <div id="reminder-empty" class="cron-empty hidden">No reminders yet. Click <strong>+ Reminder</strong> to create one.</div>
         </div>
       </div>
     </div>
@@ -392,6 +426,68 @@ yt-fetch:
     <div class="btn-row" style="margin-top:16px">
       <button id="cj-confirm" class="btn btn-primary">Save</button>
       <button id="cj-cancel" class="btn btn-ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reminder Modal -->
+<div id="reminder-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box reminder-modal-box">
+    <h3 id="reminder-modal-title">Add Reminder</h3>
+
+    <label class="field-label">Name</label>
+    <input type="text" id="rem-name" spellcheck="false" placeholder="e.g. Water the plants">
+
+    <label class="field-label">Reminder Message</label>
+    <textarea id="rem-message" rows="4" spellcheck="false" placeholder="What should the bot remind you to do?"></textarea>
+
+    <div class="reminder-schedule-grid">
+      <div>
+        <label class="field-label">Every</label>
+        <input type="number" id="rem-interval" min="1" step="1" value="1">
+      </div>
+      <div>
+        <label class="field-label">Cadence</label>
+        <select id="rem-cadence">
+          <option value="day">Day(s)</option>
+          <option value="week">Week(s)</option>
+          <option value="month">Month(s)</option>
+        </select>
+      </div>
+    </div>
+
+    <label class="field-label">Next Trigger <span class="muted">(server local time)</span></label>
+    <input type="datetime-local" id="rem-next-trigger" step="60">
+
+    <label class="field-label">Discord Channel ID</label>
+    <input type="text" id="rem-channel-id" inputmode="numeric" spellcheck="false">
+
+    <div class="kv-row" style="margin-top:12px">
+      <span>Enabled</span>
+      <label class="toggle"><input type="checkbox" id="rem-enabled" checked><span class="slider"></span></label>
+    </div>
+
+    <div class="hint-box reminder-hint">
+      During an active day/week/month period, the bot reminds you every day at this
+      fixed time until completion. Reply <code>done</code> or 👌 directly to the
+      Discord reminder; every-N-month schedules use calendar months, not a day count.
+    </div>
+
+    <div class="btn-row" style="margin-top:16px">
+      <button id="rem-confirm" class="btn btn-primary">Save</button>
+      <button id="rem-cancel" class="btn btn-ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reminder History Modal -->
+<div id="reminder-history-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box reminder-history-box">
+    <h3 id="reminder-history-title">Reminder History</h3>
+    <div id="reminder-history-list"></div>
+    <div id="reminder-history-empty" class="cron-empty hidden">No sent or done events yet.</div>
+    <div class="btn-row" style="margin-top:16px">
+      <button id="reminder-history-close" class="btn btn-primary">Close</button>
     </div>
   </div>
 </div>

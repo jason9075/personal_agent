@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 import discord
 
 from .logging_utils import get_logger
+from .reminder_db import Reminder, list_due_reminders, record_reminder_sent
 from .schedule_db import ScheduledJob, delete_job, get_job, list_jobs, parse_input_json, set_job_run_result
 
 
@@ -60,6 +61,9 @@ class FinanceScheduler:
             if not cron_matches(job.cron_expr, now):
                 continue
             await self._run_job(job, now, trigger="schedule")
+
+        for reminder in list_due_reminders(self.db_path, now):
+            await self._send_reminder(reminder, now)
 
     async def run_job_now(self, job_id: int) -> None:
         job = get_job(self.db_path, job_id)
@@ -169,6 +173,67 @@ class FinanceScheduler:
             self.repo_root,
             response_metadata=response_metadata,
         ).strip()
+
+    async def _send_reminder(self, reminder: Reminder, now: datetime) -> None:
+        logger = get_logger()
+        try:
+            channel_id = int(reminder.channel_id)
+        except ValueError:
+            logger.error(
+                "Reminder has invalid channel_id reminder_id=%s channel_id=%r",
+                reminder.id,
+                reminder.channel_id,
+            )
+            return
+
+        channel = cast(Any, self.client.get_channel(channel_id))
+        if channel is None:
+            try:
+                channel = cast(Any, await self.client.fetch_channel(channel_id))
+            except discord.DiscordException:
+                logger.exception(
+                    "Could not resolve reminder channel reminder_id=%s channel_id=%s",
+                    reminder.id,
+                    reminder.channel_id,
+                )
+                return
+        if not hasattr(channel, "send"):
+            logger.error(
+                "Reminder channel is not sendable reminder_id=%s channel_id=%s",
+                reminder.id,
+                reminder.channel_id,
+            )
+            return
+
+        content = (
+            f"⏰ **{reminder.name}**\n"
+            f"{reminder.message}\n\n"
+            "完成後請直接回覆這則訊息 `done` 或 👌。"
+        )
+        try:
+            sent_message = await channel.send(content)
+        except discord.DiscordException:
+            logger.exception(
+                "Failed to send reminder reminder_id=%s channel_id=%s",
+                reminder.id,
+                reminder.channel_id,
+            )
+            return
+
+        record_reminder_sent(
+            self.db_path,
+            reminder.id,
+            cycle_due_at=reminder.cycle_due_at,
+            sent_at=now,
+            discord_message_id=str(sent_message.id),
+            channel_id=reminder.channel_id,
+        )
+        logger.info(
+            "Sent reminder reminder_id=%s channel_id=%s cycle_due_at=%s",
+            reminder.id,
+            reminder.channel_id,
+            reminder.cycle_due_at,
+        )
 
 
 def cron_matches(expr: str, current: datetime) -> bool:

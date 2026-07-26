@@ -13,6 +13,25 @@ just bot
 
 Open `http://localhost:8765` to edit the workflow graph.
 
+## Reminder helper
+
+The **Reminders** web page manages recurring Discord reminders independently from
+workflow cron jobs. A reminder has a first trigger time, a Discord channel, and an
+every-N-days/weeks/months cadence. During an active period, it is sent every day
+at the configured local time until the allowed Discord user replies `done` or
+👌 directly to the reminder message. Skin-tone variants such as 👌🏻 are also
+accepted. Completion suppresses the rest of that calendar day, week, or month.
+
+Completing a reminder advances the next trigger from its original schedule and
+records both sent and done events in `db/bot_scheduler.sqlite3`. Month-end anchors
+are preserved, so a reminder created for January 31 advances to February 28 and
+then back to March 31. Every two months advances by calendar month
+(`January → March → May`), never by treating a month as 30 days.
+
+After each unanswered notification, the displayed `Next Trigger` advances to the
+next day at the same fixed time. The original cycle anchor is stored separately
+so replying `done` can still close the correct day, week, or month.
+
 ## Execution model
 
 ```text
@@ -100,7 +119,7 @@ mypy src
 ## Runtime data
 
 - `db/workflow.sqlite3` — workflow nodes and edges
-- `db/bot_scheduler.sqlite3` — finance schedules
+- `db/bot_scheduler.sqlite3` — workflow schedules, recurring reminders, and reminder event history
 - `.local/bot/logs/` — bot logs
 - `.local/finance/` — downloads, transcripts, intermediate outputs
 - `nodes/finance-report/notes/` — final finance notes

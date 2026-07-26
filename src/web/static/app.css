@@ -228,7 +228,8 @@ html, body {
   background: var(--bg);
 }
 
-#cron-content {
+#cron-content,
+#reminder-content {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -313,6 +314,105 @@ html, body {
 }
 
 .cron-modal-box { width: min(560px, calc(100vw - 32px)); }
+
+/* ── Reminders page ── */
+#page-reminders {
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+.reminder-help {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#reminder-table-wrap {
+  padding: 20px 24px;
+  overflow-x: auto;
+}
+
+#reminder-table {
+  width: 100%;
+  min-width: 1320px;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+#reminder-table th,
+#reminder-table td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+#reminder-table th {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--nord0);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+#reminder-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+#reminder-table td { color: var(--nord5); }
+#reminder-table td.mono { font-family: var(--mono); font-size: 11px; color: var(--nord8); }
+#reminder-table td.dim { color: var(--muted); font-size: 11px; }
+#reminder-table th:nth-child(1), #reminder-table td:nth-child(1) { width: 42px; }
+#reminder-table th:nth-child(2), #reminder-table td:nth-child(2) { width: 150px; }
+#reminder-table th:nth-child(3), #reminder-table td:nth-child(3) { width: 230px; }
+#reminder-table th:nth-child(4), #reminder-table td:nth-child(4) { width: 120px; }
+#reminder-table th:nth-child(5), #reminder-table td:nth-child(5) { width: 165px; }
+#reminder-table th:nth-child(6), #reminder-table td:nth-child(6) { width: 130px; }
+#reminder-table th:nth-child(7), #reminder-table td:nth-child(7) { width: 165px; }
+#reminder-table th:nth-child(8), #reminder-table td:nth-child(8) { width: 165px; }
+#reminder-table th:nth-child(9), #reminder-table td:nth-child(9) { width: 70px; }
+#reminder-table th:nth-child(10), #reminder-table td:nth-child(10) { width: 330px; }
+
+.reminder-modal-box { width: min(520px, calc(100vw - 32px)); }
+
+.reminder-schedule-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+}
+
+.reminder-hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.reminder-history-box {
+  width: min(780px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+}
+
+#reminder-history-list {
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.reminder-history-row {
+  display: grid;
+  grid-template-columns: 62px 160px 1fr 1fr;
+  gap: 10px;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.reminder-history-row .mono {
+  color: var(--nord8);
+  font-family: var(--mono);
+}
 
 .modal-title-row {
   display: flex;
@@ -978,6 +1078,7 @@ code {
 
 input[type="text"],
 input[type="number"],
+input[type="datetime-local"],
 select,
 textarea {
   width: 100%;
