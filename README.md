@@ -32,6 +32,11 @@ After each unanswered notification, the displayed `Next Trigger` advances to the
 next day at the same fixed time. The original cycle anchor is stored separately
 so replying `done` can still close the correct day, week, or month.
 
+Plain `@username` text in a reminder is resolved to `<@user_id>` before sending
+when it uniquely matches a member of the target Discord server. Only a direct
+reply to the reminder whose complete content is `done` or 👌 can close it; other
+reply text is explicitly left incomplete.
+
 ## Execution model
 
 ```text

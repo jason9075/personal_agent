@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import calendar
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,6 +13,10 @@ from typing import Literal
 Cadence = Literal["day", "week", "month"]
 CompletionStatus = Literal["completed", "already_completed"]
 _CADENCES = {"day", "week", "month"}
+_DONE_REPLY_PATTERN = re.compile(
+    r"\s*(?:done|👌\ufe0f?[\U0001F3FB-\U0001F3FF]?)[.!！。]?\s*",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,14 @@ class ReminderEvent:
 class ReminderCompletion:
     reminder: Reminder
     status: CompletionStatus
+
+
+def is_reminder_done_reply(content: str, *, bot_user_id: str = "") -> bool:
+    normalized = str(content)
+    if bot_user_id:
+        normalized = normalized.replace(f"<@{bot_user_id}>", "")
+        normalized = normalized.replace(f"<@!{bot_user_id}>", "")
+    return _DONE_REPLY_PATTERN.fullmatch(normalized) is not None
 
 
 def ensure_reminder_db(db_path: Path) -> None:
@@ -431,38 +444,27 @@ def complete_reminder_for_message(
     )
 
 
-def complete_latest_reminder_in_channel(
+def get_reminder_for_message(
     db_path: Path,
     *,
+    discord_message_id: str,
     channel_id: str,
-    completed_at: datetime,
-    user_id: str,
-) -> ReminderCompletion | None:
+) -> Reminder | None:
     ensure_reminder_db(db_path)
     with _connect(db_path) as conn:
         row = conn.execute(
             """
-            SELECT e.reminder_id, e.cycle_due_at
+            SELECT e.reminder_id
             FROM reminder_events e
-            JOIN reminders r ON r.id = e.reminder_id
             WHERE e.event_type = 'sent'
+              AND e.discord_message_id = ?
               AND e.channel_id = ?
-              AND e.cycle_due_at = r.cycle_due_at
-              AND r.enabled = 1
             ORDER BY e.id DESC
             LIMIT 1
             """,
-            (channel_id,),
+            (discord_message_id, channel_id),
         ).fetchone()
-    if row is None:
-        return None
-    return complete_reminder(
-        db_path,
-        int(row[0]),
-        completed_at=completed_at,
-        user_id=user_id,
-        expected_cycle_due_at=str(row[1]),
-    )
+    return None if row is None else get_reminder(db_path, int(row[0]))
 
 
 def calculate_next_trigger(reminder: Reminder, completed_at: datetime) -> datetime:

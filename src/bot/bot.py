@@ -20,9 +20,10 @@ from .engine import execute_workflow  # noqa: E402
 from .logging_utils import get_logger, setup_logging  # noqa: E402
 from .reminder_db import (  # noqa: E402
     ReminderCompletion,
-    complete_latest_reminder_in_channel,
     complete_reminder_for_message,
     ensure_reminder_db,
+    get_reminder_for_message,
+    is_reminder_done_reply,
 )
 from .schedule_db import ensure_db  # noqa: E402
 from .scheduler import FinanceScheduler  # noqa: E402
@@ -37,10 +38,6 @@ _IMAGE_ATTACHMENT_DIR = repo_root / ".local" / "discord-images"
 _IMAGE_EXTENSIONS = {".apng", ".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 _MAX_IMAGE_ATTACHMENTS = 5
 _MAX_REFERENCE_DEPTH = 20
-_REMINDER_DONE_PATTERN = re.compile(
-    r"\s*(?:done|👌\ufe0f?[\U0001F3FB-\U0001F3FF]?)[.!！。]?\s*",
-    flags=re.IGNORECASE,
-)
 scheduler = FinanceScheduler(SCHEDULE_DB_PATH, repo_root, client)
 logger = get_logger()
 
@@ -124,35 +121,47 @@ async def on_message(message: discord.Message) -> None:
 
 
 async def _handle_reminder_done(message: discord.Message, bot_user: discord.ClientUser) -> bool:
-    content = message.content
-    for mention in (f"<@{bot_user.id}>", f"<@!{bot_user.id}>"):
-        content = content.replace(mention, "")
-    if _REMINDER_DONE_PATTERN.fullmatch(content) is None:
+    reference = message.reference
+    reference_message_id = (
+        str(reference.message_id)
+        if reference is not None and reference.message_id is not None
+        else ""
+    )
+    if not is_reminder_done_reply(message.content, bot_user_id=str(bot_user.id)):
+        if reference_message_id:
+            reminder = get_reminder_for_message(
+                SCHEDULE_DB_PATH,
+                discord_message_id=reference_message_id,
+                channel_id=str(message.channel.id),
+            )
+            if reminder is not None:
+                logger.info(
+                    "Ignored non-completion reminder reply reminder_id=%s "
+                    "reference_message_id=%s content=%r",
+                    reminder.id,
+                    reference_message_id,
+                    message.content,
+                )
+                return True
         return False
 
     completion: ReminderCompletion | None = None
-    reference = message.reference
-    if reference is not None and reference.message_id is not None:
+    if reference_message_id:
         completion = complete_reminder_for_message(
             SCHEDULE_DB_PATH,
-            discord_message_id=str(reference.message_id),
+            discord_message_id=reference_message_id,
             channel_id=str(message.channel.id),
             completed_at=datetime.now(),
             user_id=str(message.author.id),
         )
 
     mentioned_bot = bot_user in message.mentions
-    if completion is None and mentioned_bot:
-        completion = complete_latest_reminder_in_channel(
-            SCHEDULE_DB_PATH,
-            channel_id=str(message.channel.id),
-            completed_at=datetime.now(),
-            user_id=str(message.author.id),
-        )
-
     if completion is None:
         if mentioned_bot:
-            await message.reply("這個頻道目前沒有等待完成的提醒。", mention_author=False)
+            await message.reply(
+                "請直接回覆要完成的提醒訊息，並輸入 `done` 或 👌。",
+                mention_author=False,
+            )
             return True
         return False
 
@@ -165,10 +174,13 @@ async def _handle_reminder_done(message: discord.Message, bot_user: discord.Clie
         mention_author=False,
     )
     logger.info(
-        "Reminder completion status=%s reminder_id=%s user_id=%s next_trigger_at=%s",
+        "Reminder completion status=%s reminder_id=%s user_id=%s "
+        "reference_message_id=%s content=%r next_trigger_at=%s",
         completion.status,
         completion.reminder.id,
         message.author.id,
+        reference_message_id,
+        message.content,
         completion.reminder.next_trigger_at,
     )
     return True

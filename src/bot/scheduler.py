@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from .schedule_db import ScheduledJob, delete_job, get_job, list_jobs, parse_inp
 
 
 SCHEDULER_POLL_SECONDS = 30
+_PLAIN_USER_MENTION_RE = re.compile(r"(?<![<\w.])@([A-Za-z0-9_.]{2,32})(?![\w.])")
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,7 @@ class FinanceScheduler:
         self._task: asyncio.Task | None = None
         self._last_minute_key = ""
         self._running_job_ids: set[int] = set()
+        self._resolved_user_mentions: dict[tuple[int, str], str] = {}
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -210,8 +213,17 @@ class FinanceScheduler:
             f"{reminder.message}\n\n"
             "完成後請直接回覆這則訊息 `done` 或 👌。"
         )
+        content = await self._resolve_plain_user_mentions(content, channel)
         try:
-            sent_message = await channel.send(content)
+            sent_message = await channel.send(
+                content,
+                allowed_mentions=discord.AllowedMentions(
+                    everyone=False,
+                    roles=False,
+                    users=True,
+                    replied_user=False,
+                ),
+            )
         except discord.DiscordException:
             logger.exception(
                 "Failed to send reminder reminder_id=%s channel_id=%s",
@@ -234,6 +246,93 @@ class FinanceScheduler:
             reminder.channel_id,
             reminder.cycle_due_at,
         )
+
+    async def _resolve_plain_user_mentions(self, content: str, channel: Any) -> str:
+        handles = {match.group(1) for match in _PLAIN_USER_MENTION_RE.finditer(content)}
+        guild = getattr(channel, "guild", None)
+        if not handles or guild is None:
+            return content
+
+        resolved: dict[str, str] = {}
+        for handle in handles:
+            cache_key = (int(guild.id), handle.casefold())
+            cached_user_id = self._resolved_user_mentions.get(cache_key)
+            if cached_user_id is not None:
+                resolved[handle.casefold()] = cached_user_id
+                continue
+
+            member_ids = _matching_member_ids(getattr(guild, "members", []), handle)
+            if len(member_ids) != 1:
+                try:
+                    payload = await self.client.http.request(
+                        discord.http.Route(
+                            "GET",
+                            "/guilds/{guild_id}/members/search",
+                            guild_id=guild.id,
+                        ),
+                        params={"query": handle, "limit": 20},
+                    )
+                except discord.HTTPException:
+                    get_logger().exception(
+                        "Failed to resolve plain Discord mention guild_id=%s handle=@%s",
+                        guild.id,
+                        handle,
+                    )
+                    continue
+                member_ids = _matching_member_ids(payload, handle)
+
+            if len(member_ids) == 1:
+                user_id = next(iter(member_ids))
+                self._resolved_user_mentions[cache_key] = user_id
+                resolved[handle.casefold()] = user_id
+            else:
+                get_logger().warning(
+                    "Could not uniquely resolve plain Discord mention guild_id=%s handle=@%s matches=%s",
+                    guild.id,
+                    handle,
+                    len(member_ids),
+                )
+
+        return _replace_plain_user_mentions(content, resolved)
+
+
+def _matching_member_ids(members: Any, handle: str) -> set[str]:
+    expected = handle.casefold()
+    matches: set[str] = set()
+    if not isinstance(members, (list, tuple)):
+        return matches
+
+    for member in members:
+        if isinstance(member, dict):
+            user = member.get("user", {})
+            if not isinstance(user, dict):
+                continue
+            user_id = str(user.get("id", ""))
+            names = (
+                user.get("username"),
+                user.get("global_name"),
+                member.get("nick"),
+                None,
+            )
+        else:
+            user_id = str(getattr(member, "id", ""))
+            names = (
+                getattr(member, "name", None),
+                getattr(member, "global_name", None),
+                getattr(member, "nick", None),
+                getattr(member, "display_name", None),
+            )
+        if user_id and any(str(name).casefold() == expected for name in names if name):
+            matches.add(user_id)
+    return matches
+
+
+def _replace_plain_user_mentions(content: str, resolved: dict[str, str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        user_id = resolved.get(match.group(1).casefold())
+        return match.group(0) if user_id is None else f"<@{user_id}>"
+
+    return _PLAIN_USER_MENTION_RE.sub(replace, content)
 
 
 def cron_matches(expr: str, current: datetime) -> bool:

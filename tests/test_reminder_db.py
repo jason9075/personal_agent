@@ -12,6 +12,8 @@ from src.bot.reminder_db import (
     create_reminder,
     ensure_reminder_db,
     get_reminder,
+    get_reminder_for_message,
+    is_reminder_done_reply,
     list_due_reminders,
     list_reminder_events,
     record_reminder_sent,
@@ -51,6 +53,23 @@ class ReminderDbTest(unittest.TestCase):
         )
         self.assertEqual(march.reminder.next_trigger_at, "2026-03-31T09:00:00")
 
+    def test_only_explicit_done_replies_are_accepted(self) -> None:
+        accepted = ("done", "DONE!", " 👌 ", "👌️", "👌🏻", "<@42> done")
+        rejected = (
+            "",
+            "其他內容",
+            "今天還沒做",
+            "done later",
+            "可以算 done 嗎",
+            "👌 thanks",
+        )
+        self.assertTrue(
+            all(is_reminder_done_reply(content, bot_user_id="42") for content in accepted)
+        )
+        self.assertFalse(
+            any(is_reminder_done_reply(content, bot_user_id="42") for content in rejected)
+        )
+
     def test_sent_reminder_retries_next_day_and_reply_completes_cycle(self) -> None:
         reminder = create_reminder(
             self.db_path,
@@ -74,6 +93,14 @@ class ReminderDbTest(unittest.TestCase):
         after_send = get_reminder(self.db_path, reminder.id)
         self.assertEqual(after_send.cycle_due_at, "2026-07-20T09:00:00")
         self.assertEqual(after_send.next_trigger_at, "2026-07-21T09:00:00")
+        found = get_reminder_for_message(
+            self.db_path,
+            discord_message_id="456",
+            channel_id="123",
+        )
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found.id, reminder.id)
         self.assertEqual(list_due_reminders(self.db_path, datetime(2026, 7, 20, 18)), [])
         self.assertEqual(list_due_reminders(self.db_path, datetime(2026, 7, 21, 8, 59)), [])
         self.assertEqual(
