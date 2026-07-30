@@ -169,6 +169,40 @@ class ReminderDbTest(unittest.TestCase):
         )
         self.assertEqual(monthly_done.reminder.next_trigger_at, "2026-03-31T09:00:00")
 
+    def test_weekly_completion_schedules_next_active_monday(self) -> None:
+        reminder = create_reminder(
+            self.db_path,
+            name="Weekly Tuesday reminder",
+            message="Weekly task",
+            channel_id="123",
+            cadence="week",
+            interval_n=1,
+            next_trigger_at="2026-07-28T12:34",
+        )
+        completion = complete_reminder(
+            self.db_path,
+            reminder.id,
+            completed_at=datetime(2026, 7, 28, 13),
+        )
+        self.assertEqual(completion.reminder.next_trigger_at, "2026-08-03T12:34:00")
+
+    def test_every_two_weeks_uses_monday_as_period_start(self) -> None:
+        reminder = create_reminder(
+            self.db_path,
+            name="Biweekly Thursday reminder",
+            message="Biweekly task",
+            channel_id="123",
+            cadence="week",
+            interval_n=2,
+            next_trigger_at="2026-07-30T08:00",
+        )
+        completion = complete_reminder(
+            self.db_path,
+            reminder.id,
+            completed_at=datetime(2026, 7, 30, 9),
+        )
+        self.assertEqual(completion.reminder.next_trigger_at, "2026-08-10T08:00:00")
+
     def test_every_two_months_uses_calendar_months_not_sixty_days(self) -> None:
         reminder = create_reminder(
             self.db_path,

@@ -127,7 +127,6 @@ def main() -> int:
         "kind": "infer",
         "response_mode": "passthrough",
         "run_output": run_output,
-        "output_path": "nodes/podcast-digest-summary/output.md",
         "metadata": {},
     }
     if target_channel_id:

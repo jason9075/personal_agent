@@ -544,7 +544,8 @@ def _add_period(
     if cadence == "day":
         return value + timedelta(days=interval_n)
     if cadence == "week":
-        return value + timedelta(weeks=interval_n)
+        current_week_monday = value - timedelta(days=value.weekday())
+        return current_week_monday + timedelta(weeks=interval_n)
 
     month_index = value.year * 12 + (value.month - 1) + interval_n
     target_year, zero_based_month = divmod(month_index, 12)

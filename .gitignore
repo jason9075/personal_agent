@@ -42,3 +42,4 @@ nodes/finance/sources.toml
 .vim/
 *.swp
 *.swo
+.codex

@@ -27,6 +27,8 @@ records both sent and done events in `db/bot_scheduler.sqlite3`. Month-end ancho
 are preserved, so a reminder created for January 31 advances to February 28 and
 then back to March 31. Every two months advances by calendar month
 (`January → March → May`), never by treating a month as 30 days.
+Weekly reminders use Monday as the first day of the week, so completing a weekly
+cycle schedules the next active cycle for Monday at the configured time.
 
 After each unanswered notification, the displayed `Next Trigger` advances to the
 next day at the same fixed time. The original cycle anchor is stored separately
