@@ -211,7 +211,7 @@ class FinanceScheduler:
         content = (
             f"⏰ **{reminder.name}**\n"
             f"{reminder.message}\n\n"
-            "完成後請直接回覆這則訊息 `done` 或 👌。"
+            "完成後請直接回覆這則訊息 `done`，或按下方 👌 reaction。"
         )
         content = await self._resolve_plain_user_mentions(content, channel)
         try:
@@ -240,6 +240,14 @@ class FinanceScheduler:
             discord_message_id=str(sent_message.id),
             channel_id=reminder.channel_id,
         )
+        try:
+            await sent_message.add_reaction("👌")
+        except discord.DiscordException:
+            logger.exception(
+                "Failed to add completion reaction reminder_id=%s message_id=%s",
+                reminder.id,
+                sent_message.id,
+            )
         logger.info(
             "Sent reminder reminder_id=%s channel_id=%s cycle_due_at=%s",
             reminder.id,

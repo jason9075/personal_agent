@@ -17,6 +17,9 @@ _DONE_REPLY_PATTERN = re.compile(
     r"\s*(?:done|👌\ufe0f?[\U0001F3FB-\U0001F3FF]?)[.!！。]?\s*",
     flags=re.IGNORECASE,
 )
+_DONE_REACTION_PATTERN = re.compile(
+    r"(?:👌\ufe0f?[\U0001F3FB-\U0001F3FF]?|✅\ufe0f?|☑\ufe0f?)"
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,10 @@ def is_reminder_done_reply(content: str, *, bot_user_id: str = "") -> bool:
         normalized = normalized.replace(f"<@{bot_user_id}>", "")
         normalized = normalized.replace(f"<@!{bot_user_id}>", "")
     return _DONE_REPLY_PATTERN.fullmatch(normalized) is not None
+
+
+def is_reminder_done_reaction(emoji: str) -> bool:
+    return _DONE_REACTION_PATTERN.fullmatch(str(emoji)) is not None
 
 
 def ensure_reminder_db(db_path: Path) -> None:
@@ -308,6 +315,27 @@ def list_reminder_events(
             LIMIT ?
             """,
             (reminder_id, bounded_limit),
+        ).fetchall()
+    return [_row_to_event(row) for row in rows]
+
+
+def list_pending_reminder_sent_events(db_path: Path) -> list[ReminderEvent]:
+    """Return sent messages that still belong to an incomplete reminder cycle."""
+    ensure_reminder_db(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT e.id, e.reminder_id, e.event_type, e.cycle_due_at,
+                   e.occurred_at, e.discord_message_id, e.channel_id, e.user_id
+            FROM reminder_events e
+            JOIN reminders r ON r.id = e.reminder_id
+            WHERE e.event_type = 'sent'
+              AND e.cycle_due_at = r.cycle_due_at
+              AND e.discord_message_id != ''
+              AND e.channel_id != ''
+              AND r.enabled = 1
+            ORDER BY e.id DESC
+            """
         ).fetchall()
     return [_row_to_event(row) for row in rows]
 
