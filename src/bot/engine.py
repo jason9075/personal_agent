@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -498,7 +499,7 @@ def _execute_executor(
         payload["model_name"] = node.model_name
 
     result = subprocess.run(
-        ["python", str(run_py), "--args-json", json.dumps(payload, ensure_ascii=False)],
+        [sys.executable, str(run_py), "--args-json", json.dumps(payload, ensure_ascii=False)],
         capture_output=True,
         text=True,
         cwd=repo_root,
@@ -526,7 +527,7 @@ def _run_hook(
         raise RuntimeError(f"{stage_name} for node '{node_id}' not found: {script_path}")
 
     result = subprocess.run(
-        ["python", str(script_path), "--args-json", json.dumps(payload, ensure_ascii=False)],
+        [sys.executable, str(script_path), "--args-json", json.dumps(payload, ensure_ascii=False)],
         capture_output=True,
         text=True,
         cwd=repo_root,
