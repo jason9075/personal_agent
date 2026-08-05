@@ -50,6 +50,7 @@
           packages = [
             pythonEnv
             pkgs.just
+            pkgs.gh
             pkgs.entr
             pkgs.sqlite
             pkgs.ffmpeg

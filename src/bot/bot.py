@@ -20,10 +20,13 @@ from .engine import execute_workflow  # noqa: E402
 from .logging_utils import get_logger, setup_logging  # noqa: E402
 from .reminder_db import (  # noqa: E402
     ReminderCompletion,
+    ReminderEvent,
     complete_reminder_for_message,
     ensure_reminder_db,
     get_reminder_for_message,
+    is_reminder_done_reaction,
     is_reminder_done_reply,
+    list_pending_reminder_sent_events,
 )
 from .schedule_db import ensure_db  # noqa: E402
 from .scheduler import FinanceScheduler  # noqa: E402
@@ -32,12 +35,14 @@ from .workflow_trace_db import ensure_trace_db  # noqa: E402
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.reactions = True
 client = discord.Client(intents=intents)
 repo_root = Path(__file__).resolve().parents[2]
 _IMAGE_ATTACHMENT_DIR = repo_root / ".local" / "discord-images"
 _IMAGE_EXTENSIONS = {".apng", ".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 _MAX_IMAGE_ATTACHMENTS = 5
 _MAX_REFERENCE_DEPTH = 20
+_REMINDER_RECONCILE_HISTORY_LIMIT = 500
 scheduler = FinanceScheduler(SCHEDULE_DB_PATH, repo_root, client)
 logger = get_logger()
 
@@ -50,6 +55,7 @@ async def on_ready() -> None:
     ensure_trace_db(WORKFLOW_TRACE_DB_PATH)
     scheduler.start()
     logger.info("Logged in as %s", client.user)
+    await _reconcile_missed_reminder_completions()
 
 
 @client.event
@@ -120,6 +126,192 @@ async def on_message(message: discord.Message) -> None:
     await _send_workflow_response(message, response, response_metadata)
 
 
+@client.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
+    if str(payload.user_id) != ALLOWED_USER_ID:
+        return
+    if not is_reminder_done_reaction(str(payload.emoji)):
+        return
+
+    completion = complete_reminder_for_message(
+        SCHEDULE_DB_PATH,
+        discord_message_id=str(payload.message_id),
+        channel_id=str(payload.channel_id),
+        completed_at=datetime.now(),
+        user_id=str(payload.user_id),
+    )
+    if completion is None:
+        return
+
+    await _send_reaction_completion_reply(
+        channel_id=str(payload.channel_id),
+        message_id=str(payload.message_id),
+        completion=completion,
+    )
+    logger.info(
+        "Reminder reaction completion status=%s reminder_id=%s user_id=%s "
+        "message_id=%s emoji=%s next_trigger_at=%s",
+        completion.status,
+        completion.reminder.id,
+        payload.user_id,
+        payload.message_id,
+        payload.emoji,
+        completion.reminder.next_trigger_at,
+    )
+
+
+async def _reconcile_missed_reminder_completions() -> None:
+    """Recover completion signals created while the Discord gateway was offline."""
+    bot_user = client.user
+    if bot_user is None:
+        return
+
+    events = list_pending_reminder_sent_events(SCHEDULE_DB_PATH)
+    if not events:
+        return
+
+    events_by_channel: dict[str, list[ReminderEvent]] = {}
+    for event in events:
+        events_by_channel.setdefault(event.channel_id, []).append(event)
+
+    completed_reminder_ids: set[int] = set()
+    for channel_id, channel_events in events_by_channel.items():
+        channel = await _resolve_sendable_channel(channel_id)
+        if channel is None:
+            logger.warning(
+                "Could not reconcile reminder completions in channel_id=%s: channel unavailable",
+                channel_id,
+            )
+            continue
+
+        await _reconcile_reminder_reactions(
+            channel,
+            channel_events,
+            completed_reminder_ids,
+        )
+        await _reconcile_reminder_replies(
+            channel,
+            channel_events,
+            completed_reminder_ids,
+            bot_user_id=str(bot_user.id),
+        )
+
+
+async def _reconcile_reminder_reactions(
+    channel: Any,
+    events: list[ReminderEvent],
+    completed_reminder_ids: set[int],
+) -> None:
+    if not hasattr(channel, "fetch_message"):
+        return
+
+    for event in events:
+        if event.reminder_id in completed_reminder_ids:
+            continue
+        try:
+            reminder_message = await channel.fetch_message(int(event.discord_message_id))
+            reacted = await _allowed_user_completed_with_reaction(reminder_message)
+            await reminder_message.add_reaction("👌")
+        except (ValueError, discord.DiscordException):
+            logger.exception(
+                "Could not inspect reminder reactions reminder_id=%s message_id=%s",
+                event.reminder_id,
+                event.discord_message_id,
+            )
+            continue
+        if not reacted:
+            continue
+
+        completion = complete_reminder_for_message(
+            SCHEDULE_DB_PATH,
+            discord_message_id=event.discord_message_id,
+            channel_id=event.channel_id,
+            completed_at=datetime.now(),
+            user_id=ALLOWED_USER_ID,
+        )
+        if completion is None or completion.status != "completed":
+            continue
+        completed_reminder_ids.add(event.reminder_id)
+        await _send_reaction_completion_reply(
+            channel_id=event.channel_id,
+            message_id=event.discord_message_id,
+            completion=completion,
+        )
+        logger.info(
+            "Recovered missed reminder reaction reminder_id=%s message_id=%s "
+            "next_trigger_at=%s",
+            event.reminder_id,
+            event.discord_message_id,
+            completion.reminder.next_trigger_at,
+        )
+
+
+async def _allowed_user_completed_with_reaction(message: discord.Message) -> bool:
+    for reaction in message.reactions:
+        if not is_reminder_done_reaction(str(reaction.emoji)):
+            continue
+        async for user in reaction.users():
+            if str(user.id) == ALLOWED_USER_ID:
+                return True
+    return False
+
+
+async def _reconcile_reminder_replies(
+    channel: Any,
+    events: list[ReminderEvent],
+    completed_reminder_ids: set[int],
+    *,
+    bot_user_id: str,
+) -> None:
+    if not hasattr(channel, "history"):
+        return
+
+    events_by_message_id = {event.discord_message_id: event for event in events}
+    try:
+        oldest_message_id = min(int(message_id) for message_id in events_by_message_id)
+        messages = channel.history(
+            limit=_REMINDER_RECONCILE_HISTORY_LIMIT,
+            after=discord.Object(id=oldest_message_id),
+            oldest_first=False,
+        )
+        async for message in messages:
+            if str(message.author.id) != ALLOWED_USER_ID:
+                continue
+            if not is_reminder_done_reply(message.content, bot_user_id=bot_user_id):
+                continue
+            reference = message.reference
+            reference_message_id = (
+                str(reference.message_id)
+                if reference is not None and reference.message_id is not None
+                else ""
+            )
+            event = events_by_message_id.get(reference_message_id)
+            if event is None or event.reminder_id in completed_reminder_ids:
+                continue
+
+            completion = complete_reminder_for_message(
+                SCHEDULE_DB_PATH,
+                discord_message_id=reference_message_id,
+                channel_id=event.channel_id,
+                completed_at=datetime.now(),
+                user_id=str(message.author.id),
+            )
+            if completion is None or completion.status != "completed":
+                continue
+            completed_reminder_ids.add(event.reminder_id)
+            await message.reply(_completion_reply_text(completion), mention_author=False)
+            logger.info(
+                "Recovered missed reminder reply reminder_id=%s reply_message_id=%s "
+                "reference_message_id=%s next_trigger_at=%s",
+                event.reminder_id,
+                message.id,
+                reference_message_id,
+                completion.reminder.next_trigger_at,
+            )
+    except (ValueError, discord.DiscordException):
+        logger.exception("Could not inspect reminder reply history channel_id=%s", channel.id)
+
+
 async def _handle_reminder_done(message: discord.Message, bot_user: discord.ClientUser) -> bool:
     reference = message.reference
     reference_message_id = (
@@ -159,20 +351,14 @@ async def _handle_reminder_done(message: discord.Message, bot_user: discord.Clie
     if completion is None:
         if mentioned_bot:
             await message.reply(
-                "請直接回覆要完成的提醒訊息，並輸入 `done` 或 👌。",
+                "請直接回覆要完成的提醒訊息並輸入 `done`，"
+                "或在該提醒上按 👌 reaction。",
                 mention_author=False,
             )
             return True
         return False
 
-    if completion.status == "already_completed":
-        prefix = f"提醒「{completion.reminder.name}」已經回報完成。"
-    else:
-        prefix = f"✅ 已完成「{completion.reminder.name}」。"
-    await message.reply(
-        f"{prefix}\n下次提醒：`{completion.reminder.next_trigger_at}`",
-        mention_author=False,
-    )
+    await message.reply(_completion_reply_text(completion), mention_author=False)
     logger.info(
         "Reminder completion status=%s reminder_id=%s user_id=%s "
         "reference_message_id=%s content=%r next_trigger_at=%s",
@@ -184,6 +370,45 @@ async def _handle_reminder_done(message: discord.Message, bot_user: discord.Clie
         completion.reminder.next_trigger_at,
     )
     return True
+
+
+def _completion_reply_text(completion: ReminderCompletion) -> str:
+    if completion.status == "already_completed":
+        prefix = f"提醒「{completion.reminder.name}」已經回報完成。"
+    else:
+        prefix = f"✅ 已完成「{completion.reminder.name}」。"
+    return f"{prefix}\n下次提醒：`{completion.reminder.next_trigger_at}`"
+
+
+async def _send_reaction_completion_reply(
+    *,
+    channel_id: str,
+    message_id: str,
+    completion: ReminderCompletion,
+) -> None:
+    channel = await _resolve_sendable_channel(channel_id)
+    if channel is None:
+        logger.warning(
+            "Could not acknowledge reminder reaction in unavailable channel_id=%s",
+            channel_id,
+        )
+        return
+
+    try:
+        if hasattr(channel, "fetch_message"):
+            reminder_message = await channel.fetch_message(int(message_id))
+            await reminder_message.reply(
+                _completion_reply_text(completion),
+                mention_author=False,
+            )
+            return
+        await channel.send(_completion_reply_text(completion))
+    except (ValueError, discord.DiscordException):
+        logger.exception(
+            "Could not acknowledge reminder reaction channel_id=%s message_id=%s",
+            channel_id,
+            message_id,
+        )
 
 
 async def _send_workflow_response(
