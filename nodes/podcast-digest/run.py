@@ -240,6 +240,8 @@ def _transcribe(audio_path: Path, out_dir: Path) -> str:
         )
         return txt_path.read_text(encoding="utf-8").strip()
     cmd = [
+        sys.executable,
+        "-m",
         "whisper",
         str(audio_path),
         "--model",
@@ -268,7 +270,7 @@ def _transcribe(audio_path: Path, out_dir: Path) -> str:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=WHISPER_TIMEOUT_SECONDS)
     except FileNotFoundError:
         _append_log(log_path, "transcribe_missing_binary", command=cmd)
-        raise RuntimeError("找不到 whisper 指令，請先在環境中安裝或啟用 Whisper。")
+        raise RuntimeError("找不到目前的 Python 執行環境，無法啟動 Whisper。")
     except subprocess.TimeoutExpired as exc:
         stdout_path.write_text((exc.stdout or "")[-20000:], encoding="utf-8")
         stderr_path.write_text((exc.stderr or "")[-20000:], encoding="utf-8")
