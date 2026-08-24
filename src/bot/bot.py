@@ -15,7 +15,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .config import ALLOWED_USER_ID, BOT_LOG_DIR, SCHEDULE_DB_PATH, WEB_PORT, WORKFLOW_DB_PATH, WORKFLOW_TRACE_DB_PATH  # noqa: E402
+from .config import (  # noqa: E402
+    ALLOWED_USER_ID,
+    BOT_LOG_DIR,
+    REMINDER_ALLOWED_USER_IDS,
+    SCHEDULE_DB_PATH,
+    WEB_PORT,
+    WORKFLOW_DB_PATH,
+    WORKFLOW_TRACE_DB_PATH,
+)
 from .engine import execute_workflow  # noqa: E402
 from .logging_utils import get_logger, setup_logging  # noqa: E402
 from .reminder_db import (  # noqa: E402
@@ -47,6 +55,10 @@ scheduler = FinanceScheduler(SCHEDULE_DB_PATH, repo_root, client)
 logger = get_logger()
 
 
+def _is_allowed_reminder_user_id(user_id: str | int) -> bool:
+    return str(user_id) in REMINDER_ALLOWED_USER_IDS
+
+
 @client.event
 async def on_ready() -> None:
     ensure_db(SCHEDULE_DB_PATH)
@@ -63,20 +75,23 @@ async def on_message(message: discord.Message) -> None:
     if message.author == client.user:
         return
 
+    bot_user = client.user
+    if bot_user is None:
+        logger.info("Ignored message before client user was ready channel_id=%s", message.channel.id)
+        return
+
+    if _is_allowed_reminder_user_id(message.author.id) and await _handle_reminder_done(
+        message,
+        bot_user,
+    ):
+        return
+
     if str(message.author.id) != ALLOWED_USER_ID:
         logger.info(
             "Ignored message from unauthorized user_id=%s channel_id=%s",
             message.author.id,
             message.channel.id,
         )
-        return
-
-    bot_user = client.user
-    if bot_user is None:
-        logger.info("Ignored message before client user was ready channel_id=%s", message.channel.id)
-        return
-
-    if await _handle_reminder_done(message, bot_user):
         return
 
     if bot_user not in message.mentions:
@@ -128,7 +143,7 @@ async def on_message(message: discord.Message) -> None:
 
 @client.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
-    if str(payload.user_id) != ALLOWED_USER_ID:
+    if not _is_allowed_reminder_user_id(payload.user_id):
         return
     if not is_reminder_done_reaction(str(payload.emoji)):
         return
@@ -210,7 +225,7 @@ async def _reconcile_reminder_reactions(
             continue
         try:
             reminder_message = await channel.fetch_message(int(event.discord_message_id))
-            reacted = await _allowed_user_completed_with_reaction(reminder_message)
+            completion_user_id = await _allowed_user_completed_with_reaction(reminder_message)
             await reminder_message.add_reaction("👌")
         except (ValueError, discord.DiscordException):
             logger.exception(
@@ -219,7 +234,7 @@ async def _reconcile_reminder_reactions(
                 event.discord_message_id,
             )
             continue
-        if not reacted:
+        if completion_user_id is None:
             continue
 
         completion = complete_reminder_for_message(
@@ -227,7 +242,7 @@ async def _reconcile_reminder_reactions(
             discord_message_id=event.discord_message_id,
             channel_id=event.channel_id,
             completed_at=datetime.now(),
-            user_id=ALLOWED_USER_ID,
+            user_id=completion_user_id,
         )
         if completion is None or completion.status != "completed":
             continue
@@ -246,14 +261,14 @@ async def _reconcile_reminder_reactions(
         )
 
 
-async def _allowed_user_completed_with_reaction(message: discord.Message) -> bool:
+async def _allowed_user_completed_with_reaction(message: discord.Message) -> str | None:
     for reaction in message.reactions:
         if not is_reminder_done_reaction(str(reaction.emoji)):
             continue
         async for user in reaction.users():
-            if str(user.id) == ALLOWED_USER_ID:
-                return True
-    return False
+            if _is_allowed_reminder_user_id(user.id):
+                return str(user.id)
+    return None
 
 
 async def _reconcile_reminder_replies(
@@ -275,7 +290,7 @@ async def _reconcile_reminder_replies(
             oldest_first=False,
         )
         async for message in messages:
-            if str(message.author.id) != ALLOWED_USER_ID:
+            if not _is_allowed_reminder_user_id(message.author.id):
                 continue
             if not is_reminder_done_reply(message.content, bot_user_id=bot_user_id):
                 continue

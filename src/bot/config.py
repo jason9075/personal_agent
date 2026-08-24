@@ -17,6 +17,12 @@ def _optional_env(name: str, default: str = "") -> str:
 
 
 ALLOWED_USER_ID = _require_env("ALLOWED_USER_ID")
+REMINDER_ALLOWED_USER_IDS = frozenset(
+    {
+        ALLOWED_USER_ID,
+        "853285381885788170",
+    }
+)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NODES_DIR = Path(__file__).resolve().parents[2] / "nodes"
 ENGINE_SYSTEM_PROMPT_PATH = Path(__file__).resolve().with_name("engine_system_prompt.md")
