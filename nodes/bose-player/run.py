@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import re
 import shutil
@@ -289,6 +290,7 @@ def start_autoplay(info: dict[str, Any], *, continuous: bool = True) -> None:
         "token": token, "enabled": continuous, "monitor": True, "channel_id": info.get("channel_id", ""),
         "speaker_address": bose_address(),
         "current_id": info["id"], "seen": [info["id"]], "error": "",
+        "chapters": info.get("chapters") or [],
     })
     try:
         command([
@@ -380,7 +382,7 @@ def advance_autoplay(token: str, candidates: list[str]) -> bool:
                 if not ipc(["get_property", "idle-active"]):
                     return True
                 load_video(info, update_title=True)
-                current.update(current_id=video_id, seen=list(seen), error="")
+                current.update(current_id=video_id, seen=list(seen), error="", chapters=info.get("chapters") or [])
                 write_session(current)
                 print(f"Autoplay loaded video_id={video_id} title={info.get('title', '')}", flush=True)
                 return True
@@ -481,15 +483,201 @@ def get_volume() -> str:
     return f"{speaker}；{playback}。"
 
 
+def connection_quality(address: str) -> str:
+    """Read optional controller metrics without scanning or reconnecting."""
+    metrics = []
+    for operation, pattern, lower, upper, label, unit in (
+        ("lq", r"Link quality:\s*(\d+)", 0, 255, "連線品質指標", "／255（非傳輸成功率）"),
+        ("rssi", r"RSSI return value:\s*(-?\d+)", -128, 127, "RSSI 回報值", "（非實際訊號強度 dBm）"),
+        ("tpl", r"Current transmit power level:\s*(-?\d+)", -128, 127, "目前發射功率", " dBm"),
+    ):
+        try:
+            output = command(["hcitool", operation, address], timeout=2)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            metrics.append(f"{label}：無法取得")
+            continue
+        match = re.search(pattern, output)
+        value = int(match.group(1)) if match else None
+        if value is None or not lower <= value <= upper:
+            metrics.append(f"{label}：無法取得")
+        else:
+            metrics.append(f"{label}：{value}{unit}")
+    return "\n".join(metrics)
+
+
+def get_status() -> str:
+    """Inspect connection and playback without reconnecting or changing either."""
+    bluetooth_ready()
+    address = bose_address()
+    state = read_session()
+    if not speaker_connected(address):
+        return ("Bose 目前未連線。可能已關機或不在連線範圍，無法僅靠藍牙確認電源狀態。"
+                "請確認喇叭已開機並在附近。")
+    quality = connection_quality(address)
+    try:
+        idle = ipc(["get_property", "idle-active"])
+        if idle:
+            raise RuntimeError("player is idle")
+        title = ipc(["get_property", "media-title"])
+        paused = ipc(["get_property", "pause"])
+        position = int(ipc(["get_property", "time-pos"]) or 0)
+        volume = round(float(ipc(["get_property", "volume"])))
+    except (OSError, RuntimeError):
+        reason = f"；上次播放紀錄：{state['error']}" if state.get("error") else ""
+        return f"Bose 已連線，目前沒有正在播放的音訊{reason}。請先貼 YouTube 連結或輸入影片名稱。\n{quality}"
+    autoplay = "；佳佳老師自動接播已開啟" if state.get("enabled") else ""
+    if state.get("error"):
+        autoplay = f"；自動接播已停止：{state['error']}"
+    return (f"Bose 已連線，{'已暫停' if paused else '正在播放'}：{title}"
+            f"（{position // 60}:{position % 60:02d}）；播放器音量 {volume}%{autoplay}。\n{quality}")
+
+
+def playback_seconds(value: Any) -> float:
+    """Parse nonnegative seconds or an MM:SS / HH:MM:SS timestamp."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError("播放時間請指定秒數、分:秒或時:分:秒。")
+    if isinstance(value, str) and ":" in value:
+        parts = value.strip().split(":")
+        if (len(parts) not in {2, 3} or any(not part.isdigit() for part in parts)
+                or any(int(part) >= 60 for part in parts[1:])):
+            raise ValueError("播放時間格式有誤，請使用分:秒或時:分:秒。")
+        seconds = 0.0
+        for part in parts:
+            seconds = seconds * 60 + int(part)
+    else:
+        try:
+            seconds = float(value)
+        except ValueError:
+            raise ValueError("播放時間請指定秒數、分:秒或時:分:秒。") from None
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("播放時間必須是大於或等於 0 的有限秒數。")
+    return seconds
+
+
+def playback_timestamp(seconds: float) -> str:
+    total = int(seconds)
+    if total >= 3600:
+        return f"{total // 3600}:{total // 60 % 60:02d}:{total % 60:02d}"
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def current_chapters() -> list[dict[str, Any]]:
+    """Read source chapters, fetching metadata once for older playback sessions."""
+    state = read_session()
+    if "chapters" not in state:
+        video_id = str(state.get("current_id", ""))
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+            raise RuntimeError("目前沒有影片的章節資料，請重新點播影片後再查詢。")
+        try:
+            info = json.loads(command([
+                *extractor_command(), "--skip-download", "--dump-single-json", "--",
+                f"https://www.youtube.com/watch?v={video_id}",
+            ], timeout=30))
+            state["chapters"] = info.get("chapters") or []
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+            raise RuntimeError("目前無法取得影片章節資料，請稍後重試。") from None
+        write_session(state)
+    chapters: list[dict[str, Any]] = []
+    for entry in state["chapters"]:
+        if not isinstance(entry, dict):
+            continue
+        start = entry.get("start_time")
+        if isinstance(start, bool) or not isinstance(start, (int, float)) or not math.isfinite(start) or start < 0:
+            continue
+        chapters.append({"title": str(entry.get("title") or f"片段 {len(chapters) + 1}"), "start_time": start})
+    return chapters
+
+
+def list_chapters(args: dict[str, Any] | None = None) -> str:
+    if ipc(["get_property", "idle-active"]):
+        return "目前沒有正在播放的 Bose 音訊，請先播放影片。"
+    chapters = current_chapters()
+    if not chapters:
+        return "這支影片沒有提供章節／片段資料；仍可指定時間跳轉。"
+    page = (args or {}).get("page", 1)
+    pages = (len(chapters) + 9) // 10
+    if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= pages:
+        return f"片段清單頁碼請指定 1 到 {pages}。"
+    start = (page - 1) * 10
+    lines = [f"目前影片的片段（共 {len(chapters)} 段，第 {page}/{pages} 頁）："]
+    for index, chapter in enumerate(chapters[start:start + 10], start + 1):
+        title = " ".join(chapter["title"].split())
+        title = title[:60] + "…" if len(title) > 60 else title
+        lines.append(f"{index}. {playback_timestamp(chapter['start_time'])} {title}")
+    if page < pages:
+        lines.append(f"輸入「列出片段第 {page + 1} 頁」可繼續查看。")
+    return "\n".join(lines)
+
+
+def seek_chapter(args: dict[str, Any]) -> str:
+    if ipc(["get_property", "idle-active"]):
+        return "目前沒有正在播放的 Bose 音訊，請先播放影片。"
+    chapters = current_chapters()
+    if not chapters:
+        return "這支影片沒有提供章節／片段資料；仍可指定時間跳轉。"
+    selection = args.get("chapter")
+    if isinstance(selection, int) and not isinstance(selection, bool):
+        if not 1 <= selection <= len(chapters):
+            return f"片段編號請指定 1 到 {len(chapters)}。"
+        chapter = chapters[selection - 1]
+    elif isinstance(selection, str) and normalize_title(selection):
+        needle = normalize_title(selection)
+        matches = [chapter for chapter in chapters if normalize_title(chapter["title"]) == needle]
+        if not matches:
+            matches = [chapter for chapter in chapters if needle in normalize_title(chapter["title"])]
+        if len(matches) != 1:
+            return "找不到唯一對應的片段，請先查詢「有哪些片段」，再指定片段編號或完整名稱。"
+        chapter = matches[0]
+    else:
+        raise ValueError("請指定片段編號或章節名稱。")
+    reply = seek_playback({"position": chapter["start_time"]})
+    return f"{reply}（{chapter['title']}）" if reply.startswith("已跳到") else reply
+
+
+def seek_playback(args: dict[str, Any]) -> str:
+    """Move within the current video while preserving pause and volume."""
+    relative = "offset" in args
+    if relative == ("position" in args):
+        raise ValueError("請指定播放位置，或要快轉／倒轉的秒數。")
+    if relative:
+        offset = args["offset"]
+        if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset):
+            raise ValueError("快轉／倒轉請指定有限秒數；倒轉使用負數。")
+    else:
+        position = args["position"]
+        target = None if position == "middle" else playback_seconds(position)
+    if ipc(["get_property", "idle-active"]):
+        return "目前沒有正在播放的 Bose 音訊。請先貼 YouTube 連結或輸入影片名稱。"
+    if not ipc(["get_property", "seekable"]):
+        return "目前的音訊不支援跳轉播放時間（例如直播）。"
+    duration = ipc(["get_property", "duration"])
+    has_duration = isinstance(duration, (int, float)) and math.isfinite(duration) and duration > 0
+    if relative:
+        current = ipc(["get_property", "time-pos"])
+        if not isinstance(current, (int, float)) or not math.isfinite(current):
+            return "目前無法讀取播放位置，請稍後再試。"
+        target = max(0.0, current + offset)
+    elif target is None:
+        if not has_duration:
+            return "目前無法取得影片長度，不能跳到中間；請改指定播放時間。"
+        target = duration / 2
+    if has_duration and target >= duration:
+        return "指定時間超過或等於影片長度，請指定影片結束前的時間。"
+    ipc(["seek", target, "absolute+exact"])
+    return f"已跳到 {playback_timestamp(target)}。"
+
+
 def execute(args: dict[str, Any]) -> str:
     action = str(args.get("action", "play")).lower()
-    if action not in {"play", "stop", "pause", "resume", "status", "volume", "get_volume"}:
-        raise ValueError("支援播放、停止、暫停、繼續、查詢狀態及調整音量。")
+    if action not in {"play", "stop", "pause", "resume", "status", "volume", "get_volume", "seek", "chapters", "seek_chapter"}:
+        raise ValueError("支援播放、停止、暫停、繼續、查詢狀態、調整音量、跳轉播放時間及查詢／跳轉片段。")
     STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (STATE_DIR / "control.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if action == "get_volume" or (action == "volume" and args.get("volume") is None):
             return get_volume()
+        if action == "status":
+            return get_status()
         if action == "stop":
             stop()
             return "已停止 Bose 播放。"
@@ -505,12 +693,18 @@ def execute(args: dict[str, Any]) -> str:
             suffix = "\n已開啟佳佳老師自動接播；輸入 stop 可停止。" if continuous else ""
             return f"Bose 正在播放：{info.get('title', 'YouTube')}\nhttps://www.youtube.com/watch?v={info['id']}{suffix}"
         try:
-            title = ipc(["get_property", "media-title"])
+            ipc(["get_property", "media-title"])
             state = read_session()
             address = str(state.get("speaker_address") or bose_address())
             if not speaker_connected(address):
                 stop()
                 raise BoseUnavailable("Bose 連線已中斷，無法操作播放。請確認喇叭已開機並在附近，再重新送出播放指令。")
+            if action == "seek":
+                return seek_playback(args)
+            if action == "chapters":
+                return list_chapters(args)
+            if action == "seek_chapter":
+                return seek_chapter(args)
             if action in {"pause", "resume"}:
                 ipc(["set_property", "pause", action == "pause"])
                 return "已暫停 Bose 播放。" if action == "pause" else "已繼續 Bose 播放。"
@@ -520,21 +714,15 @@ def execute(args: dict[str, Any]) -> str:
                     raise ValueError("音量請指定 0 到 100。")
                 ipc(["set_property", "volume", volume])
                 return f"Bose 播放音量已設為 {volume}%。"
-            paused = ipc(["get_property", "pause"])
-            position = int(ipc(["get_property", "time-pos"]) or 0)
-            volume = round(float(ipc(["get_property", "volume"])))
-            state = read_session()
-            autoplay = "；佳佳老師自動接播已開啟" if state.get("enabled") else ""
-            if state.get("error"):
-                autoplay = f"；自動接播已停止：{state['error']}"
-            return f"Bose {'已暫停' if paused else '正在播放'}：{title}（{position // 60}:{position % 60:02d}）；播放器音量 {volume}%{autoplay}。"
         except BoseUnavailable:
             raise
-        except (OSError, RuntimeError):
-            state = read_session()
-            if action == "status" and state.get("error"):
-                return f"目前沒有正在播放的 Bose 音訊；{state['error']}"
+        except (OSError, RuntimeError) as exc:
+            if action in {"chapters", "seek_chapter"}:
+                return f"無法查詢或跳轉片段：{exc}"
+            if action == "seek":
+                return "無法調整播放時間。請確認已有音訊播放，且目前串流支援跳轉，再重試。"
             return "目前沒有正在播放的 Bose 音訊。請先貼 YouTube 連結或輸入影片名稱。"
+    raise ValueError("無法執行播放器指令。")
 
 
 def main() -> int:

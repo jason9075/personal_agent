@@ -160,6 +160,151 @@ class VolumeQueryTest(unittest.TestCase):
                 query.assert_called_once()
 
 
+class PlaybackPositionTest(unittest.TestCase):
+    def test_middle_absolute_relative_and_rewind_preserve_other_controls(self) -> None:
+        cases = [({"position": "middle"}, 300), ({"position": "2:30"}, 150),
+                 ({"position": "0:03:20"}, 200), ({"position": 0}, 0),
+                 ({"offset": 30}, 130), ({"offset": -20}, 80), ({"offset": -200}, 0)]
+        for args, expected in cases:
+            properties = {"idle-active": False, "seekable": True, "duration": 600, "time-pos": 100}
+            def respond(command: list) -> object:
+                return properties[command[1]] if command[0] == "get_property" else None
+            with self.subTest(args=args), patch.object(player, "ipc", side_effect=respond) as ipc:
+                reply = player.seek_playback(args)
+                self.assertIn("已跳到", reply)
+                self.assertEqual([c.args[0] for c in ipc.call_args_list if c.args[0][0] != "get_property"],
+                                 [["seek", expected, "absolute+exact"]])
+
+    def test_invalid_times_are_rejected_before_touching_playback(self) -> None:
+        for value in (-1, True, None, "2:99", "1:60:00", "bad", float("nan"), float("inf")):
+            with self.subTest(value=value), patch.object(player, "ipc") as ipc:
+                with self.assertRaises(ValueError):
+                    player.seek_playback({"position": value})
+                ipc.assert_not_called()
+        for args in ({}, {"position": 10, "offset": 5}, {"offset": "30"}, {"offset": float("inf")}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                player.seek_playback(args)
+
+    def test_unavailable_and_out_of_range_positions_do_not_seek(self) -> None:
+        cases = [({"position": "middle"}, [True], "沒有正在播放"),
+                 ({"position": 10}, [False, False], "不支援"),
+                 ({"position": "middle"}, [False, True, None], "無法取得影片長度"),
+                 ({"position": 600}, [False, True, 600], "影片長度"),
+                 ({"offset": 30}, [False, True, 600, 590], "影片長度"),
+                 ({"offset": 30}, [False, True, 600, None], "無法讀取播放位置")]
+        for args, responses, expected in cases:
+            with self.subTest(args=args, responses=responses), patch.object(player, "ipc", side_effect=responses) as ipc:
+                self.assertIn(expected, player.seek_playback(args))
+                self.assertTrue(all(c.args[0][0] == "get_property" for c in ipc.call_args_list))
+
+    def test_seek_action_checks_connection_and_reports_ipc_failure(self) -> None:
+        for failure in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                with (patch.object(player, "STATE_DIR", Path(directory)),
+                      patch.object(player, "ipc", return_value="Title"),
+                      patch.object(player, "bose_address", return_value="AA:BB:CC:DD:EE:FF"),
+                      patch.object(player, "speaker_connected", return_value=True) as connected,
+                      patch.object(player, "seek_playback", side_effect=RuntimeError("seek failed") if failure else None,
+                                   return_value="已跳到 2:30。") as seek):
+                    reply = player.execute({"action": "seek", "position": "2:30"})
+                    self.assertIn("無法調整播放時間" if failure else "已跳到 2:30", reply)
+                    connected.assert_called_once()
+                    seek.assert_called_once()
+
+
+class ChapterControlTest(unittest.TestCase):
+    chapters = [{"title": "開場", "start_time": 0}, {"title": "故事開始", "start_time": 90},
+                {"title": "故事結尾", "start_time": 300}]
+
+    def test_listing_is_read_only_and_includes_numbers_titles_and_times(self) -> None:
+        with (patch.object(player, "read_session", return_value={"chapters": self.chapters}),
+              patch.object(player, "ipc", return_value=False) as ipc,
+              patch.object(player, "command") as command):
+            reply = player.list_chapters()
+            self.assertIn("1. 0:00 開場", reply)
+            self.assertIn("2. 1:30 故事開始", reply)
+            self.assertIn("3. 5:00 故事結尾", reply)
+            ipc.assert_called_once_with(["get_property", "idle-active"])
+            command.assert_not_called()
+
+    def test_chapter_number_and_title_resolve_to_the_start_time(self) -> None:
+        for selection in (2, "故事開始", "開始"):
+            with (self.subTest(selection=selection),
+                  patch.object(player, "current_chapters", return_value=self.chapters),
+                  patch.object(player, "ipc", return_value=False),
+                  patch.object(player, "seek_playback", return_value="已跳到 1:30。") as seek):
+                self.assertIn("故事開始", player.seek_chapter({"chapter": selection}))
+                seek.assert_called_once_with({"position": 90})
+
+    def test_ambiguous_missing_and_invalid_chapters_do_not_seek(self) -> None:
+        for selection in (0, 4, "故事", "不存在"):
+            with (self.subTest(selection=selection),
+                  patch.object(player, "current_chapters", return_value=self.chapters),
+                  patch.object(player, "ipc", return_value=False),
+                  patch.object(player, "seek_playback") as seek):
+                reply = player.seek_chapter({"chapter": selection})
+                self.assertNotIn("已跳到", reply)
+                seek.assert_not_called()
+
+    def test_absent_chapters_are_not_invented(self) -> None:
+        with (patch.object(player, "read_session", return_value={"chapters": []}),
+              patch.object(player, "ipc", return_value=False),
+              patch.object(player, "command") as command):
+            self.assertIn("沒有提供章節", player.list_chapters())
+            self.assertIn("沒有提供章節", player.seek_chapter({"chapter": 1}))
+            command.assert_not_called()
+
+    def test_long_chapter_lists_are_paged_to_fit_discord_and_keep_global_numbers(self) -> None:
+        chapters = [{"title": "長章節😀" * 100, "start_time": index * 60} for index in range(25)]
+        with (patch.object(player, "current_chapters", return_value=chapters),
+              patch.object(player, "ipc", return_value=False)):
+            first = player.list_chapters()
+            self.assertLess(len(first.encode("utf-16-le")) // 2, 2000)
+            self.assertIn("第 1/3 頁", first)
+            self.assertIn("列出片段第 2 頁", first)
+            second = player.list_chapters({"page": 2})
+            self.assertIn("11. 10:00", second)
+            self.assertIn("20. 19:00", second)
+            self.assertNotIn("21. ", second)
+            self.assertIn("頁碼", player.list_chapters({"page": 4}))
+
+    def test_older_session_fetches_chapters_once_and_can_retry_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.object(player, "STATE_DIR", Path(directory)):
+            player.write_session({"current_id": "bk_Ob2aVXEM"})
+            with (patch.object(player, "extractor_command", return_value=["yt-dlp"]),
+                  patch.object(player, "command", side_effect=[
+                      RuntimeError("network error"), json.dumps({"chapters": self.chapters}),
+                  ]) as command):
+                with self.assertRaisesRegex(RuntimeError, "無法取得影片章節"):
+                    player.current_chapters()
+                self.assertNotIn("chapters", player.read_session())
+                self.assertEqual(player.current_chapters(), self.chapters)
+                self.assertEqual(player.current_chapters(), self.chapters)
+                self.assertEqual(command.call_count, 2)
+
+    def test_starting_another_video_replaces_the_previous_chapters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with (patch.object(player, "STATE_DIR", Path(directory)),
+                  patch.object(player, "bose_address", return_value="AA:BB:CC:DD:EE:FF"),
+                  patch.object(player, "command")):
+                player.write_session({"current_id": "old", "chapters": self.chapters})
+                player.start_autoplay({"id": "new"}, continuous=False)
+                self.assertEqual(player.read_session()["chapters"], [])
+
+    def test_chapter_actions_dispatch_without_searching_for_another_video(self) -> None:
+        for action, helper in (("chapters", "list_chapters"), ("seek_chapter", "seek_chapter")):
+            with tempfile.TemporaryDirectory() as directory:
+                with (patch.object(player, "STATE_DIR", Path(directory)),
+                      patch.object(player, "ipc", return_value="Title"),
+                      patch.object(player, "bose_address", return_value="AA:BB:CC:DD:EE:FF"),
+                      patch.object(player, "speaker_connected", return_value=True),
+                      patch.object(player, helper, return_value="chapter result") as control,
+                      patch.object(player, "resolve_video") as resolve):
+                    self.assertEqual(player.execute({"action": action, "chapter": 2}), "chapter result")
+                    control.assert_called_once()
+                    resolve.assert_not_called()
+
+
 class AutoplayTest(unittest.TestCase):
     def test_only_jiajia_channel_defaults_to_autoplay_and_single_episode_can_opt_out(self) -> None:
         cases = [(player.JIAJIA_CHANNEL_ID, {}, True),
@@ -184,10 +329,12 @@ class AutoplayTest(unittest.TestCase):
                   patch.object(player, "resolve_video", return_value={
                       "id": "e8gwisBH38k", "channel_id": player.JIAJIA_CHANNEL_ID,
                       "title": "Next story", "url": "https://example.test/next",
+                      "chapters": [{"title": "下一集開場", "start_time": 0}],
                   }) as resolve,
                   patch.object(player, "ipc", return_value=True) as ipc):
                 player.write_session({"token": "session", "enabled": True, "seen": ["bk_Ob2aVXEM"]})
                 self.assertTrue(player.advance_autoplay("session", ["bk_Ob2aVXEM", "e8gwisBH38k"]))
+                self.assertEqual(player.read_session()["chapters"], [{"title": "下一集開場", "start_time": 0}])
                 resolve.assert_called_once_with("https://www.youtube.com/watch?v=e8gwisBH38k")
                 self.assertEqual(player.read_session()["current_id"], "e8gwisBH38k")
                 self.assertIn(call(["loadfile", "https://example.test/next"]), ipc.call_args_list)
@@ -269,6 +416,96 @@ class StorySearchFallbackTest(unittest.TestCase):
               patch.object(player, "find_jiajia_episode", return_value="https://youtu.be/H01rHePErSQ")):
             with self.assertRaisesRegex(RuntimeError, "不屬於佳佳老師原頻道"):
                 player.resolve_video("佳佳老師 驢子和馬")
+
+
+class StatusQueryTest(unittest.TestCase):
+    def test_quality_reports_raw_metrics_without_turning_them_into_percentages(self) -> None:
+        with patch.object(player, "command", side_effect=[
+            "Link quality: 238\n", "RSSI return value: 0\n", "Current transmit power level: 7\n",
+        ]) as command:
+            reply = player.connection_quality("AA:BB:CC:DD:EE:FF")
+            self.assertIn("238／255（非傳輸成功率）", reply)
+            self.assertIn("RSSI 回報值：0（非實際訊號強度 dBm）", reply)
+            self.assertIn("目前發射功率：7 dBm", reply)
+            self.assertNotIn("%", reply)
+            self.assertEqual(command.call_args_list, [
+                call(["hcitool", operation, "AA:BB:CC:DD:EE:FF"], timeout=2)
+                for operation in ("lq", "rssi", "tpl")
+            ])
+
+    def test_optional_metric_failures_preserve_other_results(self) -> None:
+        for failure in (FileNotFoundError(), RuntimeError("permission denied"),
+                        subprocess.TimeoutExpired("hcitool", 2), "Link quality: 999", "unexpected output"):
+            with (self.subTest(failure=failure), patch.object(player, "command", side_effect=[
+                failure, "RSSI return value: -4", "Current transmit power level: 7",
+            ])):
+                reply = player.connection_quality("AA:BB:CC:DD:EE:FF")
+                self.assertIn("連線品質指標：無法取得", reply)
+                self.assertIn("RSSI 回報值：-4", reply)
+                self.assertIn("目前發射功率：7 dBm", reply)
+
+    def test_disconnected_speaker_is_reported_even_without_a_player(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with (patch.object(player, "STATE_DIR", Path(directory)),
+                  patch.object(player, "command", side_effect=[
+                      "active", "Controller test\nPowered: yes",
+                      "Device AA:BB:CC:DD:EE:FF Bose speaker", "Connected: no",
+                  ]) as command,
+                  patch.dict(player.os.environ, {"BOSE_DEVICE_MAC": ""}),
+                  patch.object(player, "ipc") as ipc,
+                  patch.object(player, "stop") as stop):
+                reply = player.execute({"action": "status"})
+                self.assertIn("Bose 目前未連線", reply)
+                self.assertIn("無法僅靠藍牙確認電源狀態", reply)
+                self.assertNotIn("請先貼", reply)
+                ipc.assert_not_called()
+                stop.assert_not_called()
+                self.assertEqual(command.call_args_list, [
+                    call(["systemctl", "is-active", "bluetooth.service"]),
+                    call(["bluetoothctl", "show"]),
+                    call(["bluetoothctl", "devices", "Paired"]),
+                    call(["bluetoothctl", "info", "AA:BB:CC:DD:EE:FF"]),
+                ])
+
+    def test_connected_without_playback_or_with_idle_player_is_distinct(self) -> None:
+        for idle in (None, True):
+            with self.subTest(idle=idle), tempfile.TemporaryDirectory() as directory:
+                with (patch.object(player, "STATE_DIR", Path(directory)),
+                      patch.object(player, "bluetooth_ready"),
+                      patch.object(player, "bose_address", return_value="test"),
+                      patch.object(player, "speaker_connected", return_value=True),
+                      patch.object(player, "connection_quality", return_value="連線品質指標：無法取得"),
+                      patch.object(player, "ipc", side_effect=OSError if idle is None else [idle])):
+                    player.write_session({"error": "previous failure"})
+                    reply = player.execute({"action": "status"})
+                    self.assertIn("Bose 已連線，目前沒有正在播放", reply)
+                    self.assertIn("上次播放紀錄：previous failure", reply)
+                    self.assertIn("連線品質指標：無法取得", reply)
+
+    def test_connected_playing_and_paused_status_remain_read_only(self) -> None:
+        for paused in (False, True):
+            with self.subTest(paused=paused), tempfile.TemporaryDirectory() as directory:
+                with (patch.object(player, "STATE_DIR", Path(directory)),
+                      patch.object(player, "bluetooth_ready"),
+                      patch.object(player, "bose_address", return_value="test"),
+                      patch.object(player, "speaker_connected", return_value=True),
+                      patch.object(player, "connection_quality", return_value="連線品質指標：238／255"),
+                      patch.object(player, "ipc", side_effect=[False, "Story", paused, 65, 40]) as ipc):
+                    reply = player.execute({"action": "status"})
+                    self.assertIn("已暫停" if paused else "正在播放", reply)
+                    self.assertIn("Story（1:05）", reply)
+                    self.assertIn("播放器音量 40%", reply)
+                    self.assertIn("連線品質指標：238／255", reply)
+                    self.assertTrue(all(item.args[0][0] == "get_property" for item in ipc.call_args_list))
+
+    def test_adapter_failure_is_not_disguised_as_no_playback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with (patch.object(player, "STATE_DIR", Path(directory)),
+                  patch.object(player, "bluetooth_ready", side_effect=player.BoseUnavailable("藍牙目前關閉")),
+                  patch.object(player, "ipc") as ipc):
+                with self.assertRaisesRegex(player.BoseUnavailable, "藍牙目前關閉"):
+                    player.execute({"action": "status"})
+                ipc.assert_not_called()
 
 
 class SpeakerFailureTest(unittest.TestCase):

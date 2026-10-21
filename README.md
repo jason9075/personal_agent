@@ -43,6 +43,20 @@ Mention the bot in Discord to play YouTube audio on this computer's paired Bose:
 - `@bot 暫停播放` / `@bot 繼續播放` / `@bot 停止播放`
 - `@bot Bose 現在播什麼` / `@bot Bose 音量 30`
 - `@bot 目前 Bose 音量？` (reports speaker and player volumes without changing them)
+- `@bot 快轉到中間` / `@bot 跳到 2 分 30 秒` / `@bot 跳到 1:02:30`
+- `@bot 快轉 30 秒` / `@bot 倒轉 10 秒`
+- `@bot 有哪些片段` / `@bot 跳到第 3 段` / `@bot 跳到故事開始那段`
+
+Time controls seek within the current video and preserve pause and volume. The
+middle requires a known video duration. Live or unseekable streams report that
+seeking is unavailable; positions at or beyond the end are rejected. Rewinding
+past the beginning returns to 0:00. These commands also work without a mention
+in the Bose control channel.
+Chapter queries list the current video's source-provided chapter titles and start
+times (10 per page; ask `列出片段第 2 頁` to continue); chapter jumps accept a
+1-based number or an unambiguous title. Missing
+chapters are reported explicitly. Chapter metadata refreshes with each new video,
+including autoplay; older active sessions fetch it on their first chapter query.
 
 Playback uses a `bose-player` tool node reachable from the routers. Only the
 existing allowed Discord user can trigger it. One video plays at a time; a new
@@ -86,6 +100,16 @@ failure, missing audio output, and video/network errors. An unreachable speaker
 response suggests checking power, proximity, Bluetooth mode, and a phone connection
 without claiming to know which one caused the failure. Failed commands remain
 errors in the workflow log. `stop` works even when the speaker is disconnected.
+`status` checks Bluetooth availability and the speaker connection even without a
+running player. It never reconnects or wakes the speaker, and distinguishes an
+unconnected speaker from a connected speaker with no playback. A disconnected
+Bluetooth link alone cannot establish whether the speaker is powered off.
+For a connected speaker, `status` also reads link quality (0–255), the raw RSSI
+return value, and current transmit power via `hcitool`. You can ask `Bose 連線品質`
+or `訊號強度` in the Bose control channel. Link quality is not a transmission
+success percentage, and the classic Bluetooth RSSI return value is not an absolute
+signal strength in dBm. Missing tools, permissions, unsupported metrics, or query
+timeouts appear as `無法取得` without preventing playback status from being shown.
 
 ## Reminder helper
 
