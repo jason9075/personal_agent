@@ -23,6 +23,14 @@ def main() -> int:
     if not isinstance(args, dict):
         args = {}
     message = str(args.get("message") or payload.get("message", "")).strip()
+    next_nodes = payload.get("next_nodes", [])
+    if (str(payload.get("channel_id", "")) == BOSE_CONTROL_CHANNEL_ID
+            and any(isinstance(node, dict) and node.get("id") == "bose-router" for node in next_nodes)):
+        print(json.dumps({
+            "kind": "reply", "decision": "use_next_node", "next_node_id": "bose-router",
+            "args": args,
+        }, ensure_ascii=False))
+        return 0
     recent_context = str(payload.get("recent_context", "")).strip()
     run_output = json.dumps(
         {

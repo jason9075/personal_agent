@@ -21,6 +21,14 @@ play; `volume`, `volume 30`, `stop`, `pause`, `resume`, and `status` control the
 player. Chinese equivalents work too. Other channels still require a mention.
 Override the dedicated channel with `BOSE_CONTROL_CHANNEL_ID` in `.env`.
 
+The dedicated channel uses `bose-router` with `gpt-6-luna` and `max` reasoning.
+The entry router delegates to it without an LLM call; other channels retain their
+existing model settings. The Bose router declares reasoning effort in its infer
+metadata, which the engine passes explicitly to Codex and records in LLM logs.
+Its sole outgoing edge is `bose-player`, with a dedicated Bose-only prompt.
+Finance, echo, scheduling, and other domains remain separate branches of the
+entry router and are never delegated through the Bose branch.
+
 Videos from 佳佳老師說故事 (`UCgoiUg4LrO28_S0tBafdpcg`) automatically continue with
 other episodes from that same channel after each finishes. The supervisor checks
 up to 200 recent episodes and skips ones already selected in the current session.
@@ -36,7 +44,7 @@ Mention the bot in Discord to play YouTube audio on this computer's paired Bose:
 - `@bot Bose 現在播什麼` / `@bot Bose 音量 30`
 - `@bot 目前 Bose 音量？` (reports speaker and player volumes without changing them)
 
-Playback uses a `bose-player` tool node reachable from `intent-router`. Only the
+Playback uses a `bose-player` tool node reachable from the routers. Only the
 existing allowed Discord user can trigger it. One video plays at a time; a new
 play request replaces the previous video. Audio is targeted to the Bose output.
 Turn the speaker on first; the node reconnects an already paired Bose as needed.
@@ -68,6 +76,16 @@ The continuation supervisor is `personal-agent-bose-autoplay.service`; inspect i
 with `journalctl --user -u personal-agent-bose-autoplay.service`. Session state is
 stored in `.local/bose-player/session.json`. Three failed candidate lookups stop
 continuation and expose the reason through `status`.
+
+All playback sessions run a connection supervisor, including single videos.
+If the Bose disconnects, it stops playback and continuation and records an
+actionable reason. `status` reports that reason; it does not send unsolicited
+Discord notifications. New playback attempts distinguish Bluetooth service/
+adapter/power issues, missing or ambiguous pairing, connection timeout or pairing
+failure, missing audio output, and video/network errors. An unreachable speaker
+response suggests checking power, proximity, Bluetooth mode, and a phone connection
+without claiming to know which one caused the failure. Failed commands remain
+errors in the workflow log. `stop` works even when the speaker is disconnected.
 
 ## Reminder helper
 

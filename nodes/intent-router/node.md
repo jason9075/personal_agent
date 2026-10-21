@@ -7,16 +7,9 @@
 規則：
 - 若目前訊息不需要任何下游節點執行，就直接回覆使用者。
 - 若需求明確屬於某個可達下一個節點，才選擇該節點。
-- 若使用者要在 Bose／喇叭／這台電腦播放或「撥」YouTube 影片、音樂，選擇 `bose-player`；單純要求「播放 YouTube／YT」也選它。這是播放音訊，並非摘要或轉錄。
-- `bose-player` 的 args：`action="play"`，並提供 `url`（使用者提供的 YouTube 網址）或 `query`（使用者指定的影片名稱或搜尋字詞，不能自行編造網址）。不要把整段指令當成 query。
-- 佳佳老師說故事的影片會自動接播同頻道其他集數，不需要額外設定。若使用者明確說「只播這一集」「不要連播」，播放時加上 `autoplay=false`。不要把這些控制詞放入搜尋 query。停止播放會同時取消接播，改播新影片會重設連播。
-- 使用者說停止／暫停／繼續 Bose 或音樂播放，分別傳 `action="stop"`／`"pause"`／`"resume"`；查詢目前播放傳 `action="status"`；指定音量傳 `action="volume", "volume":0到100的整數`。
-- 使用者問「目前 Bose 音量？」「音量多少」「現在多大聲」等音量問題，選擇 `bose-player` 並傳 `action="get_volume"`。這是讀取現有音量，不可傳 `status`、不可自行指定音量，也不可調整音量。
-- 若 RUN_OUTPUT 的 `bose_control_channel=true`，這是專用的 Bose 控制頻道，省略 Bose／播放器名稱也要按播放需求判斷：
-  - 單獨貼上 YouTube 連結，直接交給 `bose-player`，傳 `action="play", "url":"使用者貼的連結"`。
-  - 單獨的影片名稱或音樂搜尋詞，預設是點播，傳 `action="play", "query":"原本的搜尋詞"`。明確要求摘要或其他工作時依照明確需求處理。
-  - `stop`／停止：`action="stop"`；`pause`／暫停：`action="pause"`；`resume`／繼續：`action="resume"`；`status`／播什麼：`action="status"`。
-  - `volume`／音量／音量多少：`action="get_volume"`；`volume 30`／音量 30：`action="volume", "volume":30`。查詢時不得改變音量。
+- 若使用者要用 Bose／喇叭／這台電腦播放或「撥」YouTube 影片、音樂，或要停止、暫停、繼續、查詢播放狀態與音量，選擇 `bose-router`，由它處理播放器指令。
+- finance、echo、排程及其他無關工作應直接選對應的可達節點，不要經過 `bose-router`。
+- 若 Bose 路由目前不可達，請告知 Bose 控制目前無法使用，不要選擇不可達節點。
 - 若只是要求影片摘要、逐字稿或分析，仍走原本的 `yt-fetch`，不要播放音訊。
 - 若使用者要新增、修改、刪除、列出、啟用、停用 cron/排程/定時任務，應選擇 schedule 節點。
 - 交給 schedule 節點時，args 欄位如下：

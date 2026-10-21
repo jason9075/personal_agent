@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,7 +66,8 @@ class BoseMigrationTest(unittest.TestCase):
             self.assertFalse(node.enabled)
             self.assertIsNone(node.model_name)
             self.assertEqual(node.executor_path, "nodes/bose-player/run.py")
-            self.assertEqual(len([edge for edge in graph.edges if edge.to_node_id == node.id]), 1)
+            self.assertEqual(len([edge for edge in graph.edges
+                                  if edge.to_node_id == node.id and edge.from_node_id == "bose-router"]), 1)
 
 
 class PlaybackRegressionTest(unittest.TestCase):
@@ -174,7 +176,7 @@ class AutoplayTest(unittest.TestCase):
                       patch.object(player, "start_autoplay") as autoplay):
                     player.execute({"action": "play", "query": "佳佳老師說故事", **extra})
                     start.assert_called_once_with(info, "speaker", continuous=expected)
-                    self.assertEqual(autoplay.called, expected)
+                    autoplay.assert_called_once_with(info, continuous=expected)
 
     def test_finished_episode_advances_to_unseen_episode_without_resetting_volume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -267,6 +269,71 @@ class StorySearchFallbackTest(unittest.TestCase):
               patch.object(player, "find_jiajia_episode", return_value="https://youtu.be/H01rHePErSQ")):
             with self.assertRaisesRegex(RuntimeError, "不屬於佳佳老師原頻道"):
                 player.resolve_video("佳佳老師 驢子和馬")
+
+
+class SpeakerFailureTest(unittest.TestCase):
+    def test_service_adapter_and_power_errors_have_different_responses(self) -> None:
+        cases = [([RuntimeError("inactive")], "藍牙服務尚未啟動"),
+                 (["active", "No default controller available"], "找不到藍牙裝置"),
+                 (["active", "Controller test\nPowered: no"], "藍牙目前關閉")]
+        for responses, expected in cases:
+            with self.subTest(expected=expected), patch.object(player, "command", side_effect=responses):
+                with self.assertRaisesRegex(player.BoseUnavailable, expected):
+                    player.bluetooth_ready()
+
+    def test_missing_and_ambiguous_pairings_have_actionable_responses(self) -> None:
+        devices = "Device AA:BB:CC:DD:EE:01 Bose one\nDevice AA:BB:CC:DD:EE:02 Bose two"
+        for response, expected in [("", "尚未配對 Bose"), (devices, "多台 Bose")]:
+            with (self.subTest(expected=expected), patch.dict(player.os.environ, {"BOSE_DEVICE_MAC": ""}),
+                  patch.object(player, "command", return_value=response)):
+                with self.assertRaisesRegex(player.BoseUnavailable, expected):
+                    player.bose_address()
+
+    def test_unreachable_speaker_suggests_power_range_and_other_connections(self) -> None:
+        with (patch.object(player, "bluetooth_ready"),
+              patch.object(player, "bose_address", return_value="AA:BB:CC:DD:EE:FF"),
+              patch.object(player, "speaker_connected", return_value=False),
+              patch.object(player, "command", side_effect=subprocess.TimeoutExpired("bluetoothctl", 12))):
+            with self.assertRaises(player.BoseUnavailable) as caught:
+                player.bose_sink()
+            self.assertIn("目前連不到 Bose", str(caught.exception))
+            self.assertIn("請確認喇叭已開機", str(caught.exception))
+            self.assertIn("手機", str(caught.exception))
+
+    def test_pairing_and_busy_errors_are_not_reported_as_power_off(self) -> None:
+        self.assertIn("配對驗證失敗", player.connection_message("AuthenticationFailed"))
+        self.assertIn("等幾秒", player.connection_message("InProgress"))
+
+    def test_connected_speaker_without_audio_sink_has_specific_response(self) -> None:
+        with (patch.object(player, "bluetooth_ready"),
+              patch.object(player, "bose_address", return_value="AA:BB:CC:DD:EE:FF"),
+              patch.object(player, "speaker_connected", return_value=True),
+              patch.object(player, "command", return_value="[]"),
+              patch.object(player.time, "sleep")):
+            with self.assertRaisesRegex(player.BoseUnavailable, "已連線，但尚未建立音訊輸出"):
+                player.bose_sink()
+
+    def test_disconnect_stops_single_playback_and_autoplay_and_records_reason(self) -> None:
+        for enabled in (False, True):
+            with self.subTest(autoplay=enabled), tempfile.TemporaryDirectory() as directory:
+                with (patch.object(player, "STATE_DIR", Path(directory)),
+                      patch.object(player, "episode_ids", return_value=[]),
+                      patch.object(player, "speaker_connected", return_value=False),
+                      patch.object(player, "ipc") as ipc):
+                    player.write_session({"token": "test", "enabled": enabled, "monitor": True,
+                                          "speaker_address": "test", "channel_id": player.JIAJIA_CHANNEL_ID})
+                    self.assertEqual(player.autoplay_worker("test"), 1)
+                    state = player.read_session()
+                    self.assertFalse(state["enabled"])
+                    self.assertFalse(state["monitor"])
+                    self.assertIn("Bose 連線已中斷", state["error"])
+                    ipc.assert_called_once_with(["quit"])
+
+    def test_control_without_playback_tells_user_how_to_start(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with (patch.object(player, "STATE_DIR", Path(directory)),
+                  patch.object(player, "ipc", side_effect=OSError)):
+                self.assertIn("請先貼 YouTube 連結", player.execute({"action": "pause"}))
 
 
 if __name__ == "__main__":

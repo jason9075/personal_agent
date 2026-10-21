@@ -79,6 +79,20 @@ CREATE TABLE IF NOT EXISTS workflow_edges (
 
 _SEED_NODES: list[WorkflowNode] = [
     WorkflowNode(
+        id="bose-router",
+        name="Bose Control Router",
+        description="Interpret commands in the dedicated Bose control channel using Luna Max.",
+        model_name="gpt-6-luna",
+        start_node=False,
+        enabled=True,
+        executor_path="nodes/bose-router/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        node_prompt_path="nodes/bose-router/node.md",
+        use_prev_output=False,
+        timeout_seconds=120,
+    ),
+    WorkflowNode(
         id="bose-player",
         name="Bose YouTube Player",
         description="Play YouTube audio on the local Bose speaker by video URL or title; stop, pause, resume, adjust volume, or check playback.",
@@ -249,7 +263,8 @@ _SEED_NODES: list[WorkflowNode] = [
 ]
 
 _SEED_EDGES: list[tuple[str, str]] = [
-    ("intent-router", "bose-player"),
+    ("intent-router", "bose-router"),
+    ("bose-router", "bose-player"),
     ("intent-router", "finance"),
     ("intent-router", "echo"),
     ("intent-router", "node-creator"),
@@ -280,6 +295,7 @@ def ensure_workflow_db(db_path: Path) -> None:
         _migrate_ensure_media_nodes(conn)
         _migrate_ensure_image_analysis_node(conn)
         _migrate_ensure_bose_player(conn)
+        _migrate_ensure_bose_router(conn)
         _migrate_clear_unused_model_names(conn)
         _migrate_update_finance_description(conn)
         conn.commit()
@@ -358,19 +374,35 @@ def _migrate_ensure_image_analysis_node(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_ensure_bose_router(conn: sqlite3.Connection) -> None:
+    """Keep the Bose branch scoped to its player and repair the former copied edges."""
+    node = next(node for node in _SEED_NODES if node.id == "bose-router")
+    if not conn.execute("SELECT 1 FROM workflow_nodes WHERE id = ?", (node.id,)).fetchone():
+        _upsert_node_conn(conn, node)
+    conn.execute(
+        "DELETE FROM workflow_edges WHERE from_node_id = ? AND to_node_id != ?",
+        (node.id, "bose-player"),
+    )
+    conn.execute(
+        "DELETE FROM workflow_edges WHERE from_node_id = ? AND to_node_id = ?",
+        ("intent-router", "bose-player"),
+    )
+    conn.execute(
+        "UPDATE workflow_nodes SET node_prompt_path = ? WHERE id = ? AND node_prompt_path = ?",
+        (node.node_prompt_path, node.id, "nodes/intent-router/node.md"),
+    )
+    for source, target in [("intent-router", node.id), (node.id, "bose-player")]:
+        if not conn.execute(
+            "SELECT 1 FROM workflow_edges WHERE from_node_id = ? AND to_node_id = ?", (source, target),
+        ).fetchone():
+            conn.execute("INSERT INTO workflow_edges (from_node_id, to_node_id) VALUES (?, ?)", (source, target))
+
+
 def _migrate_ensure_bose_player(conn: sqlite3.Connection) -> None:
-    """Make speaker playback available to existing workflows without overwriting edits."""
+    """Make the playback executor available without overwriting node edits."""
     node = next(node for node in _SEED_NODES if node.id == "bose-player")
     if not conn.execute("SELECT 1 FROM workflow_nodes WHERE id = ?", (node.id,)).fetchone():
         _upsert_node_conn(conn, node)
-    if not conn.execute(
-        "SELECT 1 FROM workflow_edges WHERE from_node_id = ? AND to_node_id = ?",
-        ("intent-router", node.id),
-    ).fetchone():
-        conn.execute(
-            "INSERT INTO workflow_edges (from_node_id, to_node_id) VALUES (?, ?)",
-            ("intent-router", node.id),
-        )
 
 
 _NO_LLM_NODE_IDS = {"echo", "schedule", "webfetch", "yt-fetch", "bose-player"}

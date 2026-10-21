@@ -27,6 +27,7 @@ class LlmRequest:
     task_prompt: str = ""
     image_paths: list[str] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
+    reasoning_effort: str = ""
 
 
 def build_llm_prompt(request: LlmRequest) -> str:
@@ -56,6 +57,8 @@ def run_codex_request(request: LlmRequest, repo_root: Path) -> str:
         "-C",
         str(repo_root),
     ]
+    if request.reasoning_effort:
+        cmd.extend(["-c", f"model_reasoning_effort={json.dumps(request.reasoning_effort)}"])
     for image_path in _existing_image_paths(request.image_paths):
         cmd.extend(["--image", str(image_path)])
     completed = subprocess.run(
@@ -126,6 +129,8 @@ def _log_request(
     metadata["node_prompt_path"] = request.node_prompt_path or ""
     metadata["has_task_prompt"] = "1" if request.task_prompt else "0"
     metadata["image_count"] = str(len(_existing_image_paths(request.image_paths)))
+    if request.reasoning_effort:
+        metadata["reasoning_effort"] = request.reasoning_effort
     log_llm_call(
         db_path=_LLM_LOG_DB_PATH,
         node_id=request.node_id,

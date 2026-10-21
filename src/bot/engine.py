@@ -345,6 +345,7 @@ def _execute_node_llm(
         task_prompt=envelope.task_prompt,
         image_paths=list(image_paths or []),
         metadata=envelope.metadata,
+        reasoning_effort=envelope.metadata.get("reasoning_effort", ""),
     )
     return run_codex_request(request, repo_root).strip()
 

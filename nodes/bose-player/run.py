@@ -24,6 +24,42 @@ JIAJIA_CHANNEL_ID = "UCgoiUg4LrO28_S0tBafdpcg"
 SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "personal-agent-bose.sock"
 
 
+class BoseUnavailable(RuntimeError):
+    """An actionable speaker/adapter failure, distinct from a video failure."""
+
+
+def connection_message(detail: str) -> str:
+    if any(word in detail for word in ("AuthenticationFailed", "AuthenticationRejected", "AuthenticationCanceled")):
+        return "Bose 配對驗證失敗。請讓喇叭進入配對模式，重新完成配對後再試。"
+    if "InProgress" in detail:
+        return "Bose 正在處理另一個連線。請等幾秒再試一次。"
+    if "NotReady" in detail:
+        return "電腦藍牙尚未就緒。請先開啟藍牙，再重新送出播放指令。"
+    return "目前連不到 Bose。請確認喇叭已開機、在電腦附近，並切到藍牙模式；若仍連不上，先中斷它和手機的連線再試。"
+
+
+def bluetooth_ready() -> None:
+    try:
+        command(["systemctl", "is-active", "bluetooth.service"])
+    except RuntimeError:
+        raise BoseUnavailable("電腦的藍牙服務尚未啟動。請先啟用藍牙服務，再重新送出播放指令。") from None
+    try:
+        adapter = command(["bluetoothctl", "show"])
+    except RuntimeError:
+        raise BoseUnavailable("電腦目前找不到藍牙裝置。請確認藍牙硬體與驅動已就緒。") from None
+    if "Controller " not in adapter:
+        raise BoseUnavailable("電腦目前找不到藍牙裝置。請確認藍牙硬體與驅動已就緒。")
+    if "Powered: yes" not in adapter:
+        raise BoseUnavailable("電腦藍牙目前關閉或被停用。請先開啟藍牙，再重新送出播放指令。")
+
+
+def speaker_connected(address: str) -> bool:
+    try:
+        return "Connected: yes" in command(["bluetoothctl", "info", address])
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return False
+
+
 def command(argv: list[str], timeout: int = 15) -> str:
     result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     if result.returncode:
@@ -100,35 +136,47 @@ def resolve_video(value: str) -> dict[str, Any]:
 def bose_address() -> str:
     address = os.environ.get("BOSE_DEVICE_MAC", "").strip().upper()
     if not address:
-        devices = command(["bluetoothctl", "devices", "Paired"])
+        try:
+            devices = command(["bluetoothctl", "devices", "Paired"])
+        except RuntimeError:
+            raise BoseUnavailable("無法讀取 Bose 配對資訊。請先確認電腦藍牙已啟用。") from None
         matches = [line.split()[1] for line in devices.splitlines() if "bose" in line.lower()]
-        if len(matches) != 1:
-            raise RuntimeError("請先配對並開啟 Bose；多台 Bose 時請設定 BOSE_DEVICE_MAC。")
+        if not matches:
+            raise BoseUnavailable("這台電腦尚未配對 Bose。請先讓喇叭進入配對模式並完成配對，再送出播放指令。")
+        if len(matches) > 1:
+            raise BoseUnavailable("目前配對了多台 Bose，無法確定要用哪一台。請先設定預設喇叭。")
         address = matches[0]
     if not re.fullmatch(r"(?:[A-F0-9]{2}:){5}[A-F0-9]{2}", address):
-        raise ValueError("BOSE_DEVICE_MAC 格式錯誤。")
+        raise BoseUnavailable("播放器的 Bose 裝置設定有誤，請修正預設喇叭設定後再試。")
     return address
 
 
 def bose_sink() -> str:
+    bluetooth_ready()
     address = bose_address()
-    info = command(["bluetoothctl", "info", address])
-    if "Connected: yes" not in info:
+    if not speaker_connected(address):
         for attempt in range(2):
             try:
-                command(["bluetoothctl", "--timeout", "20", "connect", address], timeout=25)
+                command(["bluetoothctl", "--timeout", "10", "connect", address], timeout=12)
+                if not speaker_connected(address):
+                    raise RuntimeError("speaker did not connect")
                 break
-            except RuntimeError:
+            except (RuntimeError, subprocess.TimeoutExpired) as exc:
                 if attempt:
-                    raise RuntimeError("無法連上 Bose，請確認喇叭已開機且在附近。") from None
+                    print(f"Bose connect failed: {exc}", file=sys.stderr)
+                    raise BoseUnavailable(connection_message(str(exc))) from None
     for _ in range(20):
-        for obj in json.loads(command(["pw-dump"])):
+        try:
+            objects = json.loads(command(["pw-dump"]))
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            raise BoseUnavailable("Bose 已連線，但電腦的音訊服務沒有回應。請重新啟動音訊服務後再試。") from None
+        for obj in objects:
             props = obj.get("info", {}).get("props", {})
             if (props.get("media.class") == "Audio/Sink"
                     and props.get("api.bluez5.address", "").upper() == address):
                 return str(props["node.name"])
         time.sleep(0.25)
-    raise RuntimeError("Bose 尚未建立音訊輸出，請稍後重試。")
+    raise BoseUnavailable("Bose 已連線，但尚未建立音訊輸出。請等幾秒重試；若持續失敗，請關閉再開啟喇叭。")
 
 
 def ipc(args: list[Any]) -> Any:
@@ -170,7 +218,7 @@ def player_failure() -> str:
         return f"YouTube 音訊串流回傳 HTTP {match.group(1)}，無法播放；請稍後重試或換一支影片。"
     if re.search(r"\[e\]\[ao[/\]]|Failed to initialize audio", text):
         return "無法開啟 Bose 音訊輸出，請確認喇叭已連線。"
-    return "播放器未能開始播放，請查看 .local/bose-player/player.log。"
+    return "影片音訊未能開始播放。請稍後重試或換一支影片；這不一定是 Bose 連線問題。"
 
 
 def load_video(info: dict[str, Any], *, update_title: bool = False) -> None:
@@ -235,16 +283,17 @@ def write_session(state: dict[str, Any]) -> None:
     temporary.replace(STATE_DIR / "session.json")
 
 
-def start_autoplay(info: dict[str, Any]) -> None:
+def start_autoplay(info: dict[str, Any], *, continuous: bool = True) -> None:
     token = uuid.uuid4().hex
     write_session({
-        "token": token, "enabled": True, "channel_id": info["channel_id"],
+        "token": token, "enabled": continuous, "monitor": True, "channel_id": info.get("channel_id", ""),
+        "speaker_address": bose_address(),
         "current_id": info["id"], "seen": [info["id"]], "error": "",
     })
     try:
         command([
             "systemd-run", "--user", "--collect", f"--unit={AUTOPLAY_UNIT}",
-            "--description=Bose story autoplay", "--property=Type=exec", "--property=UMask=0077",
+            "--description=Bose playback supervisor", "--property=Type=exec", "--property=UMask=0077",
             f"--setenv=XDG_RUNTIME_DIR={SOCKET_PATH.parent}", "--", sys.executable,
             str(Path(__file__).resolve()), "--autoplay-worker", token,
         ])
@@ -326,6 +375,8 @@ def advance_autoplay(token: str, candidates: list[str]) -> bool:
                 current = read_session()
                 if current.get("token") != token or not current.get("enabled"):
                     return False
+                if current.get("speaker_address") and not speaker_connected(str(current["speaker_address"])):
+                    raise BoseUnavailable("Bose 連線已中斷，已停止接播。請確認喇叭已開機並在附近，再重新送出播放指令。")
                 if not ipc(["get_property", "idle-active"]):
                     return True
                 load_video(info, update_title=True)
@@ -333,6 +384,8 @@ def advance_autoplay(token: str, candidates: list[str]) -> bool:
                 write_session(current)
                 print(f"Autoplay loaded video_id={video_id} title={info.get('title', '')}", flush=True)
                 return True
+        except BoseUnavailable:
+            raise
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
             errors.append(str(exc))
             print(f"Autoplay skipped video_id={video_id}: {exc}", flush=True)
@@ -343,7 +396,7 @@ def advance_autoplay(token: str, candidates: list[str]) -> bool:
         current = read_session()
         if current.get("token") != token:
             return False
-        current.update(enabled=False, seen=list(seen), error=errors[-1] if errors else "")
+        current.update(enabled=False, monitor=False, seen=list(seen), error=errors[-1] if errors else "")
         write_session(current)
         ipc(["quit"])
     return False
@@ -352,15 +405,27 @@ def advance_autoplay(token: str, candidates: list[str]) -> bool:
 def autoplay_worker(token: str) -> int:
     try:
         state = read_session()
-        if state.get("token") != token or not state.get("enabled"):
+        if state.get("token") != token or not state.get("monitor"):
             return 0
-        candidates = episode_ids(str(state["channel_id"]))
+        candidates = episode_ids(str(state["channel_id"])) if state.get("enabled") else []
         print(f"Autoplay ready episodes={len(candidates)}", flush=True)
         while True:
             state = read_session()
-            if state.get("token") != token or not state.get("enabled"):
+            if state.get("token") != token or not state.get("monitor"):
                 return 0
-            if ipc(["get_property", "idle-active"]):
+            if not speaker_connected(str(state["speaker_address"])):
+                raise BoseUnavailable("Bose 連線已中斷，已停止播放與接播。請確認喇叭已開機並在附近，再重新送出播放指令。")
+            try:
+                idle = ipc(["get_property", "idle-active"])
+            except OSError:
+                if state.get("enabled"):
+                    raise RuntimeError("播放器意外結束，已停止接播。請重新送出播放指令。") from None
+                finish_monitor(token)
+                return 0  # Single-video mpv exits normally at EOF.
+            if idle:
+                if not state.get("enabled"):
+                    finish_monitor(token)
+                    return 0
                 if not advance_autoplay(token, candidates):
                     return 1 if read_session().get("error") else 0
             time.sleep(1)
@@ -369,21 +434,33 @@ def autoplay_worker(token: str) -> int:
             fcntl.flock(lock, fcntl.LOCK_EX)
             state = read_session()
             if state.get("token") == token:
-                state.update(enabled=False, error=str(exc))
+                state.update(enabled=False, monitor=False, error=str(exc))
                 write_session(state)
                 # Finish the current episode if discovering the next ones failed.
                 try:
-                    ipc(["set_property", "idle", "once"])
+                    if isinstance(exc, BoseUnavailable):
+                        ipc(["quit"])
+                    else:
+                        ipc(["set_property", "idle", "once"])
                 except (OSError, RuntimeError):
                     pass
         print(f"Autoplay failed: {exc}", file=sys.stderr, flush=True)
         return 1
 
 
+def finish_monitor(token: str) -> None:
+    with (STATE_DIR / "control.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = read_session()
+        if state.get("token") == token:
+            state.update(monitor=False)
+            write_session(state)
+
+
 def get_volume() -> str:
     """Read speaker and player volumes without reconnecting or changing either."""
     address = bose_address()
-    speaker = "Bose 目前未連線，無法讀取喇叭音量"
+    speaker = "Bose 目前未連線，無法讀取喇叭音量；請確認喇叭已開機並在附近"
     for obj in json.loads(command(["pw-dump"])):
         props = obj.get("info", {}).get("props", {})
         if (props.get("media.class") == "Audio/Sink"
@@ -424,11 +501,16 @@ def execute(args: dict[str, Any]) -> str:
             info = resolve_video(value)
             continuous = info.get("channel_id") == JIAJIA_CHANNEL_ID and args.get("autoplay", True) is not False
             start_player(info, sink, continuous=continuous)
-            if continuous:
-                start_autoplay(info)
+            start_autoplay(info, continuous=continuous)
             suffix = "\n已開啟佳佳老師自動接播；輸入 stop 可停止。" if continuous else ""
             return f"Bose 正在播放：{info.get('title', 'YouTube')}\nhttps://www.youtube.com/watch?v={info['id']}{suffix}"
         try:
+            title = ipc(["get_property", "media-title"])
+            state = read_session()
+            address = str(state.get("speaker_address") or bose_address())
+            if not speaker_connected(address):
+                stop()
+                raise BoseUnavailable("Bose 連線已中斷，無法操作播放。請確認喇叭已開機並在附近，再重新送出播放指令。")
             if action in {"pause", "resume"}:
                 ipc(["set_property", "pause", action == "pause"])
                 return "已暫停 Bose 播放。" if action == "pause" else "已繼續 Bose 播放。"
@@ -438,7 +520,6 @@ def execute(args: dict[str, Any]) -> str:
                     raise ValueError("音量請指定 0 到 100。")
                 ipc(["set_property", "volume", volume])
                 return f"Bose 播放音量已設為 {volume}%。"
-            title = ipc(["get_property", "media-title"])
             paused = ipc(["get_property", "pause"])
             position = int(ipc(["get_property", "time-pos"]) or 0)
             volume = round(float(ipc(["get_property", "volume"])))
@@ -447,11 +528,13 @@ def execute(args: dict[str, Any]) -> str:
             if state.get("error"):
                 autoplay = f"；自動接播已停止：{state['error']}"
             return f"Bose {'已暫停' if paused else '正在播放'}：{title}（{position // 60}:{position % 60:02d}）；播放器音量 {volume}%{autoplay}。"
+        except BoseUnavailable:
+            raise
         except (OSError, RuntimeError):
             state = read_session()
             if action == "status" and state.get("error"):
-                return f"目前沒有正在播放的 Bose 音訊；自動接播已停止：{state['error']}"
-            return "目前沒有正在播放的 Bose 音訊。"
+                return f"目前沒有正在播放的 Bose 音訊；{state['error']}"
+            return "目前沒有正在播放的 Bose 音訊。請先貼 YouTube 連結或輸入影片名稱。"
 
 
 def main() -> int:
@@ -467,7 +550,10 @@ def main() -> int:
         reply = execute(args)
     except subprocess.TimeoutExpired:
         returncode = 1
-        reply = "連線或取得影片逾時，請稍後重試。"
+        reply = "取得影片逾時。請確認網路可用，再重試或換一支影片。"
+    except BoseUnavailable as exc:
+        returncode = 1
+        reply = str(exc)
     except (ValueError, RuntimeError, OSError) as exc:
         returncode = 1
         reply = f"Bose 播放失敗：{exc}"
