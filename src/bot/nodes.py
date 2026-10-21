@@ -10,6 +10,10 @@ from .scheduler import parse_cron
 from .config import SCHEDULE_DB_PATH
 
 
+class NodeExecutionError(RuntimeError):
+    """A failed executor's user-facing error, preserved by the workflow."""
+
+
 @dataclass(frozen=True)
 class NodeActionResult:
     node_id: str
@@ -63,6 +67,12 @@ def parse_llm_envelope(action_result: NodeActionResult) -> NodeLlmEnvelope | Non
 def format_direct_node_reply(action_result: NodeActionResult) -> str:
     """Return a direct Discord reply without additional synthesis."""
     if action_result.returncode != 0:
+        try:
+            parsed = json.loads(action_result.stdout)
+            if isinstance(parsed, dict) and parsed.get("kind") == "reply" and parsed.get("reply"):
+                return str(parsed["reply"]).strip()
+        except json.JSONDecodeError:
+            pass
         output = action_result.stdout.strip() or action_result.stderr.strip() or "(no output)"
         return f"節點執行失敗：\n```text\n{output[:3500]}\n```"
     raw = action_result.stdout.strip()

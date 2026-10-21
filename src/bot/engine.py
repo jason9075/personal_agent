@@ -11,7 +11,7 @@ from typing import Any
 
 from .llm import LlmRequest, parse_json_response, run_codex_request, unwrap_decision_reply
 from .logging_utils import get_logger
-from .nodes import NodeActionResult, format_direct_node_reply, parse_llm_envelope
+from .nodes import NodeActionResult, NodeExecutionError, format_direct_node_reply, parse_llm_envelope
 from .workflow_db import WorkflowGraph, WorkflowNode, load_workflow_graph
 from .workflow_trace_db import create_run, finish_run, log_node
 
@@ -247,6 +247,8 @@ def _execute_node(
         _run_hook(node.id, "pre_hook", node.pre_hook_path, payload, repo_root)
 
     action_result = _execute_executor(node, payload, prev_output, repo_root)
+    if action_result.returncode != 0:
+        raise NodeExecutionError(format_direct_node_reply(action_result))
     envelope = parse_llm_envelope(action_result)
     output_text = format_direct_node_reply(action_result)
     decision = None
@@ -333,7 +335,7 @@ def _execute_node_llm(
 ) -> str:
     request = LlmRequest(
         node_id=node.id,
-        model_name=node.model_name or "gpt-5.4",
+        model_name=node.model_name or "gpt-6.1-sol",
         node_prompt_path=node.node_prompt_path,
         previous_input=prev_output if node.use_prev_output else "",
         run_output=envelope.run_output,

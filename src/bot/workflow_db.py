@@ -79,10 +79,24 @@ CREATE TABLE IF NOT EXISTS workflow_edges (
 
 _SEED_NODES: list[WorkflowNode] = [
     WorkflowNode(
+        id="bose-player",
+        name="Bose YouTube Player",
+        description="Play YouTube audio on the local Bose speaker by video URL or title; stop, pause, resume, adjust volume, or check playback.",
+        model_name=None,
+        start_node=False,
+        enabled=True,
+        executor_path="nodes/bose-player/run.py",
+        pre_hook_path=None,
+        post_hook_path=None,
+        node_prompt_path=None,
+        use_prev_output=False,
+        timeout_seconds=180,
+    ),
+    WorkflowNode(
         id="intent-router",
         name="Intent Router",
         description="Top-level entry node. Either reply directly or delegate to a reachable domain node.",
-        model_name="gpt-5.4",
+        model_name="gpt-6.1-sol",
         start_node=True,
         enabled=True,
         executor_path="nodes/intent-router/run.py",
@@ -96,7 +110,7 @@ _SEED_NODES: list[WorkflowNode] = [
         id="finance",
         name="Finance",
         description="Handles finance questions and finance report generation.",
-        model_name="gpt-5.4",
+        model_name="gpt-6.1-sol",
         start_node=False,
         enabled=True,
         executor_path="nodes/finance/run.py",
@@ -110,7 +124,7 @@ _SEED_NODES: list[WorkflowNode] = [
         id="finance-report",
         name="Finance Report",
         description="Download the selected finance RSS episode, transcribe audio, and generate a markdown digest.",
-        model_name="gpt-5.4",
+        model_name="gpt-6.1-sol",
         start_node=False,
         enabled=True,
         executor_path="nodes/finance-report/run.py",
@@ -152,7 +166,7 @@ _SEED_NODES: list[WorkflowNode] = [
         id="node-creator",
         name="Node Creator",
         description="Create or update workflow nodes via natural language. LLM generates run.py and registers the node.",
-        model_name="gpt-5.4",
+        model_name="gpt-6.1-sol",
         start_node=False,
         enabled=True,
         executor_path="nodes/node-creator/run.py",
@@ -180,7 +194,7 @@ _SEED_NODES: list[WorkflowNode] = [
         id="webfetch-summary",
         name="Web Fetch Summary",
         description="Summarize fetched web page text according to the user's requested focus or output format.",
-        model_name="gpt-5.4",
+        model_name="gpt-6.1-sol",
         start_node=False,
         enabled=True,
         executor_path="nodes/webfetch-summary/run.py",
@@ -208,7 +222,7 @@ _SEED_NODES: list[WorkflowNode] = [
         id="yt-summary",
         name="YouTube Summary",
         description="Summarize a YouTube transcript according to the user's requested focus or output format.",
-        model_name="gpt-5.4",
+        model_name="gpt-6.1-sol",
         start_node=False,
         enabled=True,
         executor_path="nodes/yt-summary/run.py",
@@ -222,7 +236,7 @@ _SEED_NODES: list[WorkflowNode] = [
         id="image-analysis",
         name="Image Analysis",
         description="Analyze Discord image attachments according to the user's request, such as reading text, describing content, extracting key points, comparing images, or answering image-related questions.",
-        model_name="gpt-5.4",
+        model_name="gpt-6.1-sol",
         start_node=False,
         enabled=True,
         executor_path="nodes/image-analysis/run.py",
@@ -235,6 +249,7 @@ _SEED_NODES: list[WorkflowNode] = [
 ]
 
 _SEED_EDGES: list[tuple[str, str]] = [
+    ("intent-router", "bose-player"),
     ("intent-router", "finance"),
     ("intent-router", "echo"),
     ("intent-router", "node-creator"),
@@ -264,6 +279,7 @@ def ensure_workflow_db(db_path: Path) -> None:
         _migrate_ensure_node_creator(conn)
         _migrate_ensure_media_nodes(conn)
         _migrate_ensure_image_analysis_node(conn)
+        _migrate_ensure_bose_player(conn)
         _migrate_clear_unused_model_names(conn)
         _migrate_update_finance_description(conn)
         conn.commit()
@@ -342,7 +358,22 @@ def _migrate_ensure_image_analysis_node(conn: sqlite3.Connection) -> None:
         )
 
 
-_NO_LLM_NODE_IDS = {"echo", "schedule", "webfetch", "yt-fetch"}
+def _migrate_ensure_bose_player(conn: sqlite3.Connection) -> None:
+    """Make speaker playback available to existing workflows without overwriting edits."""
+    node = next(node for node in _SEED_NODES if node.id == "bose-player")
+    if not conn.execute("SELECT 1 FROM workflow_nodes WHERE id = ?", (node.id,)).fetchone():
+        _upsert_node_conn(conn, node)
+    if not conn.execute(
+        "SELECT 1 FROM workflow_edges WHERE from_node_id = ? AND to_node_id = ?",
+        ("intent-router", node.id),
+    ).fetchone():
+        conn.execute(
+            "INSERT INTO workflow_edges (from_node_id, to_node_id) VALUES (?, ?)",
+            ("intent-router", node.id),
+        )
+
+
+_NO_LLM_NODE_IDS = {"echo", "schedule", "webfetch", "yt-fetch", "bose-player"}
 
 
 def _migrate_clear_unused_model_names(conn: sqlite3.Connection) -> None:

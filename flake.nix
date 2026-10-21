@@ -54,6 +54,8 @@
             pkgs.entr
             pkgs.sqlite
             pkgs.ffmpeg
+            pkgs.mpv
+            pkgs.deno
             pkgs.yt-dlp
             pkgs.plantuml
             pkgs.visidata

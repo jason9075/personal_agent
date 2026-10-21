@@ -3,6 +3,13 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.bot.config import BOSE_CONTROL_CHANNEL_ID  # noqa: E402
 
 
 def main() -> int:
@@ -20,6 +27,8 @@ def main() -> int:
     run_output = json.dumps(
         {
             "recent_context": recent_context or "",
+            "channel_id": str(payload.get("channel_id", "")),
+            "bose_control_channel": str(payload.get("channel_id", "")) == BOSE_CONTROL_CHANNEL_ID,
         },
         ensure_ascii=False,
         indent=2,

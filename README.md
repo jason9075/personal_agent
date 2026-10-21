@@ -13,6 +13,62 @@ just bot
 
 Open `http://localhost:8765` to edit the workflow graph.
 
+## Bose YouTube playback
+
+In the `bose-control` channel (`1562300132249313290`), the allowed user can send
+messages without mentioning the bot. A bare YouTube link or video title means
+play; `volume`, `volume 30`, `stop`, `pause`, `resume`, and `status` control the
+player. Chinese equivalents work too. Other channels still require a mention.
+Override the dedicated channel with `BOSE_CONTROL_CHANNEL_ID` in `.env`.
+
+Videos from 佳佳老師說故事 (`UCgoiUg4LrO28_S0tBafdpcg`) automatically continue with
+other episodes from that same channel after each finishes. The supervisor checks
+up to 200 recent episodes and skips ones already selected in the current session.
+Say `只播這一集` to play once. `stop` or playing another video cancels the previous
+session; pause/resume and volume changes persist across episodes. `status` shows
+whether autoplay is active. Other channels' videos play once.
+
+Mention the bot in Discord to play YouTube audio on this computer's paired Bose:
+
+- `@bot 用 Bose 播放 https://www.youtube.com/watch?v=...`
+- `@bot 播放 YT 周杰倫 稻香` (searches and plays the first result)
+- `@bot 暫停播放` / `@bot 繼續播放` / `@bot 停止播放`
+- `@bot Bose 現在播什麼` / `@bot Bose 音量 30`
+- `@bot 目前 Bose 音量？` (reports speaker and player volumes without changing them)
+
+Playback uses a `bose-player` tool node reachable from `intent-router`. Only the
+existing allowed Discord user can trigger it. One video plays at a time; a new
+play request replaces the previous video. Audio is targeted to the Bose output.
+Turn the speaker on first; the node reconnects an already paired Bose as needed.
+If multiple Bose devices are paired, set `BOSE_DEVICE_MAC` in `.env` and restart.
+Search, Bluetooth, and stream failures are reported in the Discord reply.
+If YouTube returns no search results for a 佳佳老師 episode name, the player
+compares it against the original channel's recent episode titles and resolves
+the matching video directly. Ambiguous titles require clarification.
+
+The player uses mpv, Deno, and an isolated yt-dlp installation with its matching
+YouTube challenge solver. Install these for the bot service from the repository root:
+
+```bash
+just bose-player-setup
+```
+
+The setup pins a tested yt-dlp nightly in `nodes/bose-player/requirements.txt`;
+it does not replace yt-dlp used by other nodes. Extracted HTTP request headers are
+passed to mpv. Formats are checked before playback, so inaccessible direct audio
+can fall back to a working video stream (up to 360p preferred, audio playback only).
+Playback startup errors report the stream or audio error and mark
+the workflow as failed, including scheduled runs.
+
+The player runs independently as the user service `personal-agent-bose.service`,
+so the bot can reply while audio continues. Stop it with Discord or
+`systemctl --user stop personal-agent-bose.service`. Runtime logs are stored in
+`.local/bose-player/player.log`. Restarting the bot does not stop playback.
+The continuation supervisor is `personal-agent-bose-autoplay.service`; inspect it
+with `journalctl --user -u personal-agent-bose-autoplay.service`. Session state is
+stored in `.local/bose-player/session.json`. Three failed candidate lookups stop
+continuation and expose the reason through `status`.
+
 ## Reminder helper
 
 The **Reminders** web page manages recurring Discord reminders independently from
@@ -54,7 +110,7 @@ Important rules:
 - Workflow control is `node + edge`, not legacy skill-centric routing flags.
 - Decision nodes may only hand off to their current outgoing edges.
 - `start_node` is unique. Saving a node with `start_node=true` clears the previous one.
-- Each node has its own `model_name`. The default is `gpt-5.4`, and the web UI colors nodes by model rather than pass index.
+- Each node has its own `model_name`. The default is `gpt-6.1-sol`, and the web UI colors nodes by model rather than pass index.
 - Hook files are optional. The web UI scans for sibling `pre_hook.py` / `run.py` / `post_hook.py` and shows lifecycle badges.
 - Prompt text is stored in repo `.md` files. The DB stores prompt file paths such as `nodes/intent-router/node.md`, and the engine loads them at runtime.
 

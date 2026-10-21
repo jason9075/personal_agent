@@ -27,6 +27,13 @@ status:
 logs:
     journalctl --user -u personal-agent-bot.service -f
 
+# Install the background Bose audio player for an existing bot service
+bose-player-setup:
+    nix build nixpkgs#mpv --out-link .local/bose-mpv
+    nix build nixpkgs#deno --out-link .local/bose-deno
+    python -m venv .local/bose-tools
+    .local/bose-tools/bin/python -m pip install --upgrade -r nodes/bose-player/requirements.txt
+
 # Remove generated finance notes
 clean:
     rm -rf nodes/finance-report/notes

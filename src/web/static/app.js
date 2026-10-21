@@ -1,6 +1,7 @@
 'use strict';
 
 const MODEL_PALETTE = {
+  'gpt-6.1-sol': { title: '#315c72', body: '#101c24', badge: '#6bc7f0' },
   'gpt-5.4': { title: '#315c72', body: '#101c24', badge: '#6bc7f0' },
   'gpt-5.4-mini': { title: '#44613d', body: '#162114', badge: '#97d67d' },
   'gpt-5.3-codex': { title: '#6b4b2a', body: '#24180f', badge: '#f0b36b' },

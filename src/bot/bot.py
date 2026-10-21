@@ -17,6 +17,7 @@ load_dotenv()
 
 from .config import (  # noqa: E402
     ALLOWED_USER_ID,
+    BOSE_CONTROL_CHANNEL_ID,
     BOT_LOG_DIR,
     REMINDER_ALLOWED_USER_IDS,
     SCHEDULE_DB_PATH,
@@ -25,6 +26,7 @@ from .config import (  # noqa: E402
     WORKFLOW_TRACE_DB_PATH,
 )
 from .engine import execute_workflow  # noqa: E402
+from .nodes import NodeExecutionError  # noqa: E402
 from .logging_utils import get_logger, setup_logging  # noqa: E402
 from .reminder_db import (  # noqa: E402
     ReminderCompletion,
@@ -94,7 +96,7 @@ async def on_message(message: discord.Message) -> None:
         )
         return
 
-    if bot_user not in message.mentions:
+    if bot_user not in message.mentions and str(message.channel.id) != BOSE_CONTROL_CHANNEL_ID:
         logger.info(
             "Ignored message without bot mention from user_id=%s channel_id=%s",
             message.author.id,
@@ -110,7 +112,7 @@ async def on_message(message: discord.Message) -> None:
     image_paths = await _collect_image_paths(message, referenced_messages)
     workflow_message = _build_workflow_message(content, referenced_messages, image_paths)
     logger.info(
-        "Received mentioned message user_id=%s channel_id=%s reference_depth=%s image_count=%s content=%r",
+        "Received workflow message user_id=%s channel_id=%s reference_depth=%s image_count=%s content=%r",
         message.author.id,
         message.channel.id,
         len(referenced_messages),
@@ -136,7 +138,7 @@ async def on_message(message: discord.Message) -> None:
         )
     except Exception as exc:
         logger.exception("Workflow execution failed")
-        response = f"工作流執行失敗：{type(exc).__name__}: {exc}"
+        response = str(exc) if isinstance(exc, NodeExecutionError) else f"工作流執行失敗：{type(exc).__name__}: {exc}"
         response_metadata = {}
     await _send_workflow_response(message, response, response_metadata)
 

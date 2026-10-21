@@ -12,6 +12,7 @@ build/
 venv/
 
 # Data & output (may contain private conversations)
+db/
 raw_json/
 *.json
 *.jsonl

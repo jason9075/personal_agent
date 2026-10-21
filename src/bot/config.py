@@ -17,6 +17,7 @@ def _optional_env(name: str, default: str = "") -> str:
 
 
 ALLOWED_USER_ID = _require_env("ALLOWED_USER_ID")
+BOSE_CONTROL_CHANNEL_ID = _optional_env("BOSE_CONTROL_CHANNEL_ID", "1562300132249313290")
 REMINDER_ALLOWED_USER_IDS = frozenset(
     {
         ALLOWED_USER_ID,

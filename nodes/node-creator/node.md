@@ -19,7 +19,7 @@
   "pre_hook_py_content": "",
   "post_hook_py_content": "",
   "node_md_content": "",
-  "model_name": "gpt-5.4",
+  "model_name": "gpt-6.1-sol",
   "timeout_seconds": 120,
   "use_prev_output": true,
   "add_edge_from_intent_router": true
@@ -52,7 +52,7 @@
       "pre_hook_py_content": "",
       "post_hook_py_content": "",
       "node_md_content": "LLM 靜態 prompt",
-      "model_name": "gpt-5.4",
+      "model_name": "gpt-6.1-sol",
       "timeout_seconds": 300,
       "use_prev_output": true,
       "add_edge_from_intent_router": false
@@ -250,7 +250,7 @@ if __name__ == "__main__":
 
 | 欄位 | 說明 | 建議值 |
 |------|------|--------|
-| `model_name` | 呼叫的 LLM 模型 ID；`null` 表示此 node 不呼叫 LLM | `"gpt-5.4"`（通用）、`"o3"`（需要深度推理）、`null`（tool node） |
+| `model_name` | 呼叫的 LLM 模型 ID；`null` 表示此 node 不呼叫 LLM | `"gpt-6.1-sol"`（通用）、`"o3"`（需要深度推理）、`null`（tool node） |
 | `timeout_seconds` | node 執行的最長秒數（含 LLM 呼叫） | 一般邏輯 `60`，需要網路/下載 `300`，需要 Whisper/大型任務 `7200`，預設 `120` |
 | `use_prev_output` | 是否將上一個 node 的 stdout 注入 payload 的 `prev_output` 欄位 | `true`（需要接力上下文）、`false`（standalone node） |
 | `add_edge_from_intent_router` | 是否讓 intent-router 能路由到此 node | `true`（頂層功能）、`false`（只作為子流程） |
@@ -497,7 +497,7 @@ print(json.dumps({"kind": "infer", "response_mode": "passthrough", "run_output":
 - 只處理前一個 node 輸出的子流程：`add_edge_from_intent_router=false`，並讓使用者後續在 DAG UI 加邊，或更新現有 workflow edge
 - 若新 node 是 `webfetch`、`yt-fetch`、`image-analysis` 的下游分析器，`use_prev_output=true`
 - 若新 node 直接處理使用者訊息或圖片 payload，`use_prev_output=false`
-- 專用分析 node 通常使用 LLM：`model_name="gpt-5.4"`，`node_md_content` 必填
+- 專用分析 node 通常使用 LLM：`model_name="gpt-6.1-sol"`，`node_md_content` 必填
 - 純下載、查 DB、呼叫 API、格式轉換等 tool node 才設 `model_name=null`
 
 ## 任務
@@ -508,7 +508,7 @@ print(json.dumps({"kind": "infer", "response_mode": "passthrough", "run_output":
 - `run_py_content` 必須是完整、可執行的 Python 程式碼（使用 \n 換行）
 - 若 node 使用 LLM，`node_md_content` 放靜態 prompt（角色、格式規則）；`run_output` 只放動態資料
 - 若 node 不使用 LLM，`model_name` 設為 null，`node_md_content` 留空字串
-- `model_name` 選值：一般任務 `"gpt-5.4"`；深度推理 `"o3"`；tool node `null`
+- `model_name` 選值：一般任務 `"gpt-6.1-sol"`；深度推理 `"o3"`；tool node `null`
 - `timeout_seconds`：一般 60，需要網路 300，Whisper/大型任務 7200
 - `use_prev_output=true` 接力上下文；standalone 入口點設 false
 - `add_edge_from_intent_router=true` 頂層功能；子流程節點設 false

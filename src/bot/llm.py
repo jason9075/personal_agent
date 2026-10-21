@@ -48,7 +48,7 @@ def run_codex_request(request: LlmRequest, repo_root: Path) -> str:
     cmd = [
         "codex",
         "-m",
-        request.model_name or "gpt-5.4",
+        request.model_name or "gpt-6.1-sol",
         "exec",
         "--skip-git-repo-check",
         "--sandbox",
@@ -129,7 +129,7 @@ def _log_request(
     log_llm_call(
         db_path=_LLM_LOG_DB_PATH,
         node_id=request.node_id,
-        model=request.model_name or "gpt-5.4",
+        model=request.model_name or "gpt-6.1-sol",
         prompt=prompt,
         response=response,
         success=success,
