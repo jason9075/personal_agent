@@ -25,6 +25,7 @@ from .config import (  # noqa: E402
     WORKFLOW_DB_PATH,
     WORKFLOW_TRACE_DB_PATH,
 )
+from .discord_messages import split_discord_message  # noqa: E402
 from .engine import execute_workflow  # noqa: E402
 from .nodes import NodeExecutionError  # noqa: E402
 from .logging_utils import get_logger, setup_logging  # noqa: E402
@@ -442,7 +443,7 @@ async def _send_workflow_response(
             source_message.channel.id,
             len(response),
         )
-        await source_message.reply(response, mention_author=False)
+        await _reply_in_chunks(source_message, response)
         return
 
     target_channel = await _resolve_sendable_channel(target_channel_id)
@@ -452,9 +453,9 @@ async def _send_workflow_response(
             target_channel_id,
             source_channel_id,
         )
-        await source_message.reply(
+        await _reply_in_chunks(
+            source_message,
             f"找不到可發送的目標頻道 `<#{target_channel_id}>`，原訊息如下：\n\n{response}",
-            mention_author=False,
         )
         return
 
@@ -465,7 +466,8 @@ async def _send_workflow_response(
         len(response),
     )
     try:
-        await target_channel.send(response)
+        for chunk in split_discord_message(response):
+            await target_channel.send(chunk)
     except discord.DiscordException as exc:
         logger.exception("Failed to send workflow response target_channel_id=%s", target_channel_id)
         await source_message.reply(
@@ -475,6 +477,13 @@ async def _send_workflow_response(
         return
 
     await source_message.reply(f"已發送到 <#{target_channel_id}>。", mention_author=False)
+
+
+async def _reply_in_chunks(source_message: discord.Message, content: str) -> None:
+    chunks = split_discord_message(content)
+    await source_message.reply(chunks[0], mention_author=False)
+    for chunk in chunks[1:]:
+        await source_message.channel.send(chunk)
 
 
 async def _resolve_sendable_channel(channel_id: str) -> Any | None:
